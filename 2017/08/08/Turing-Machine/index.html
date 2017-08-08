@@ -3,19 +3,23 @@
 <head>
     <!-- hexo-inject:begin --><!-- hexo-inject:end --><meta charset="utf-8">
     
-    <title>Hexo</title>
+    <title>Turing Machine | Hexo</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
     
-    <meta name="description" content="This is a test">
-<meta property="og:type" content="website">
-<meta property="og:title" content="Hexo">
-<meta property="og:url" content="http://yoursite.com/about/index.html">
+        <meta name="keywords" content="" />
+    
+    <meta name="description" content="这是MIT 6.004 Computation Structures lab3的Report  IntroductionIn 1936 Alan Turing described the “a-machine”, a device that performed computations on a string of symbols according to a simple set of man">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Turing Machine">
+<meta property="og:url" content="http://yoursite.com/2017/08/08/Turing-Machine/index.html">
 <meta property="og:site_name" content="Hexo">
-<meta property="og:description" content="This is a test">
-<meta property="og:updated_time" content="2017-08-07T08:42:48.994Z">
+<meta property="og:description" content="这是MIT 6.004 Computation Structures lab3的Report  IntroductionIn 1936 Alan Turing described the “a-machine”, a device that performed computations on a string of symbols according to a simple set of man">
+<meta property="og:image" content="http://yoursite.com/images/TM.jpg">
+<meta property="og:updated_time" content="2017-08-08T12:06:25.225Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="Hexo">
-<meta name="twitter:description" content="This is a test">
+<meta name="twitter:title" content="Turing Machine">
+<meta name="twitter:description" content="这是MIT 6.004 Computation Structures lab3的Report  IntroductionIn 1936 Alan Turing described the “a-machine”, a device that performed computations on a string of symbols according to a simple set of man">
+<meta name="twitter:image" content="http://yoursite.com/images/TM.jpg">
     
 
     
@@ -122,17 +126,65 @@
                         <div class="main-body-header">
     <h1 class="header">
     
-    Hexo
+    <a class="page-title-link" href="/categories/Labs/">Labs</a>
     </h1>
 </div>
                         <div class="main-body-content">
-                            <article id="page-undefined" class="article article-single article-type-page" itemscope itemprop="blogPost">
+                            <article id="post-Turing-Machine" class="article article-single article-type-post" itemscope itemprop="blogPost">
     <div class="article-inner">
         
+            <header class="article-header">
+                
+    
+        <h1 class="article-title" itemprop="name">
+        Turing Machine
+        </h1>
+    
+
+            </header>
+        
+        
+            <div class="article-meta">
+                
+    <div class="article-date">
+        <a href="/2017/08/08/Turing-Machine/" class="article-date">
+            <time datetime="2017-08-08T09:54:38.000Z" itemprop="datePublished">2017-08-08</time>
+        </a>
+    </div>
+
+                
+            </div>
         
         
         <div class="article-entry" itemprop="articleBody">
-            <p>This is a test</p>
+            <blockquote>
+<p>这是MIT 6.004 Computation Structures lab3的Report</p>
+</blockquote>
+<h1 id="Introduction"><a href="#Introduction" class="headerlink" title="Introduction"></a>Introduction</h1><p>In 1936 Alan Turing described the “a-machine”, a device that performed computations on a string of symbols according to a simple set of manipulation rules enumerated in the form of a finite-state machine (FSM). The machine consisted of</p>
+<blockquote>
+<p>…an unlimited memory capacity obtained in the form of an infinite tape marked out into squares, on each of which a symbol could be printed. At any moment there is one symbol in the machine; it is called the scanned symbol. The machine can alter the scanned symbol and its behavior is in part determined by that symbol, but the symbols on the tape elsewhere do not affect the behavior of the machine. However, the tape can be moved back and forth through the machine, this being one of the elementary operations of the machine. Any symbol on the tape may therefore eventually have an innings. (Turing, 1948)<br>We now refer to this device as a Turing Machine (TM) and use it as our definition for what it means to be computable, i.e., we believe (Church’s Thesis) that a function is algorithmically computable if and only if it’s computable by a TM. </p>
+</blockquote>
+<p>The TM has a doubly-infinite tape with discrete symbol positions (cells) each of which contains one of a finite set of symbols. The control FSM has one input: the symbol found in the current cell. The FSM produces several outputs: the symbol to be written into the current cell and a motion control that determines how the head should move. In our simulation, the tape is displayed horizontally, so the tape can move left, right, or stay where it is. </p>
+<p>The TM operates in a sequence of steps under the control of the FSM. The FSM’s current state and symbol in the current cell select the next state and an action to be performed. The action specifies what symbol should be written into the current cell and the subsequent motion of the tape, if any. The sequence of steps continues until the TM enters a special halting state, at which point the computation is complete. </p>
+<p><strong><em>The goal of this lab is write the FSM controller for a TM that checks to see if the string of left and right parentheses it finds on its input tape “balance”. Please see the design problem description below. </em></strong></p>
+<h1 id="About-Turing-Machine（来自维基百科）"><a href="#About-Turing-Machine（来自维基百科）" class="headerlink" title="About Turing Machine（来自维基百科）"></a>About Turing Machine（来自<a href="https://www.wikiwand.com/zh-hans/%E5%9B%BE%E7%81%B5%E6%9C%BA" target="_blank" rel="external">维基百科</a>）</h1><p>图灵的基本思想是用机器来模拟人们用纸笔进行数学运算的过程，他把这样的过程看作下列两种简单的动作：</p>
+<ul>
+<li>在纸上写上或擦除某个符号；</li>
+<li>把注意力从纸的一个位置移动到另一个位置；</li>
+</ul>
+<p>而在每个阶段，人要决定下一步的动作，依赖于（a）此人当前所关注的纸上某个位置的符号和（b）此人当前思维的状态。<br>为了模拟人的这种运算过程，图灵构造出一台假想的机器，该机器由以下几个部分组成：</p>
+<ol>
+<li>一条无限长的纸带TAPE。纸带被划分为一个接一个的小格子，每个格子上包含一个来自有限字母表的符号，字母表中有一个特殊的符号\square表示空白。纸带上的格子从左到右依次被编号为0, 1, 2, …，纸带的右端可以无限伸展。</li>
+<li>一个读写头HEAD。该读写头可以在纸带上左右移动，它能读出当前所指的格子上的符号，并能改变当前格子上的符号。</li>
+<li>一套控制规则TABLE。它根据当前机器所处的状态以及当前读写头所指的格子上的符号来确定读写头下一步的动作，并改变状态寄存器的值，令机器进入一个新的状态。</li>
+<li>一个状态寄存器。它用来保存图灵机当前所处的状态。图灵机的所有可能状态的数目是有限的，并且有一个特殊的状态，称为停机状态。参见停机问题。</li>
+</ol>
+<p>注意这个机器的每一部分都是有限的，但它有一个潜在的无限长的纸带，因此这种机器只是一个理想的设备。图灵认为这样的一台机器就能模拟人类所能进行的任何计算过程。<br><img src="/2017/08/08/Turing-Machine/Turing_machine_2a.gif" alt=""><br>在某些模型中，纸带移动，而未用到的纸带真正是“空白”的。要进行的指令（q4）展示在扫描到方格之上（由Kleene（1952）p.375绘制）。<br><img src="/2017/08/08/Turing-Machine/Turing_machine_2b.gif" alt=""><br>在某些模型中，读写头沿着固定的纸带移动。要进行的指令（q1）展示在读写头内。在这种模型中“空白”的纸带是全部为0的。有阴影的方格，包括读写头扫描到的空白，标记了1,1,B的那些方格，和读写头符号，构成了系统状态。（由Minsky（1967）p.121绘制）</p>
+<h1 id="Report"><a href="#Report" class="headerlink" title="Report"></a>Report</h1><p>本次实验使用TMsim模拟图灵机，实验目的是判断括号序列是否平衡．<br>首先介绍一下操作图灵机的语句：<br><strong><em>symbols symbol…</em></strong><br>　　声明符号的集合，磁带的每个格子中都会有符号，默认符号为空．操作图灵机时会赋予磁带初始符号序列．<br><strong><em>states state…</em></strong><br>　　声明状态的集合，集合中的第一个状态为初始状态．除此之外有两个默认状态:”*halt*“和”*error*“．如果在当前符号和当前状态下，图灵机不知道下一步该做什么，也就是程序没有指明在这种状态下该怎么做，就会进入*error*状态．当图灵机的状态为*halt*时，TM终止．<br><strong><em>action state symbol newstate writesymbol motion</em></strong><br>　　这条语句是TM对磁带进行的操作．当前状态为state，符号为symbol时，磁带的当前符号被改写为writesymbol,状态被改为newstate，磁带向motion制定的方向移动．<br><strong><em>tape name symbol…</em></strong><br>　　name是每条磁带的名字，实验中每个测试序列都包含在不同的磁带中．symbol…表示初始化符号序列，符号之间用空格隔开．这条语句为每个磁带进行初始化．<br><strong><em>result name symbol…</em></strong><br>　　TM终止时，如果磁带上的符号序列和symbol…相同，表示程序正确运行．<br><strong><em>result name symbol</em></strong><br>　　和上一个语句的区别是，TM终止时，只要header指向的符号和symbol相同就表示程序正确运行了．</p>
+<p><strong>算法：</strong><br><img src="/2017/08/08/Turing-Machine/tm0.png" alt=""><br>我设置了三种状态<br>s1:向右寻找未匹配的右括号，在此状态下，遇到符号”(“和”1”都会用相同的值覆盖，并且不改变状态．<br>　　s1-&gt;s2:当前符号为”)”时发生，header将当前符号改写为1，并且将磁带右移，也就是header相对于磁带向左移动．解释：header将当前右括号标记为匹配(1)，并且向左寻找与之想匹配的左括号．<br>　　s1-&gt;s3:当前符号为”-（表示空格）”时发生，header不改变当前符号，然后向左移动．解释：所有的右括号都已经匹配完了，这说明左括号的数目大于等于右括号，为了确定是否等于，还要向左寻找是否有多余的左括号．<br>s2:向左寻找与刚刚标记完的右括号相匹配的左括号．在此状态下，遇到”1”（已经匹配的括号）会跳过．<br>　　s2-&gt;s1:找到一个左括号时发生状态变化．<br>　　s2-&gt;*halt*:遇到”-“，即找不到左括号时发生状态改变．此时将当前符号赋值0．<br>s3:向左寻找是否有多余的左括号．在此状态下，遇到”1”会跳过．<br>　　s3-&gt;*halt*:完成此状态转变有两种方式．第一种是遇到左括号，说明左括号数量比右括号多，所以将当前符号变为”0”之后停止TM．第二种是遇到＂－＂，说明括号序列完全匹配，所以返回”1”.</p>
+<p><strong>代码：</strong></p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div></pre></td><td class="code"><pre><div class="line">// Parenthesis matcher Turing Machine</div><div class="line">// test tapes </div><div class="line"></div><div class="line">symbols ( ) 0 1</div><div class="line"></div><div class="line">tape test1 (</div><div class="line">result1 test1 0</div><div class="line"></div><div class="line">tape test2 )</div><div class="line">result1 test2 0</div><div class="line"></div><div class="line">tape test3 ( ) ( )</div><div class="line">result1 test3 1</div><div class="line"></div><div class="line">tape test4 ( ) ( ) )</div><div class="line">result1 test4 0</div><div class="line"></div><div class="line">tape test5 ( ( ( )</div><div class="line">result1 test5 0</div><div class="line"></div><div class="line">tape test6 ( ) ( ( ( ) ( ( ( ) ) ( ) ) )</div><div class="line">result1 test6 0</div><div class="line"></div><div class="line">tape test7 ( ( ( ( ( ( ) ( ( ) ) ) ) ) ) )</div><div class="line">result1 test7 1</div><div class="line"></div><div class="line">// define additional symbols, your states and actions here</div><div class="line">states s1 s2 s3</div><div class="line"></div><div class="line">action s1 ( s1      (  l</div><div class="line">action s1 1 s1      1  l</div><div class="line">action s1 ) s2      1  r</div><div class="line">action s1 - s3      -  r</div><div class="line">action s2 1 s2      1  r</div><div class="line">action s2 ( s1      1  l</div><div class="line">action s2 - *halt*  0  -</div><div class="line">action s3 ( *halt*  0  -</div><div class="line">action s3 - *halt*  1  -</div><div class="line">action s3 1 s3      1  r</div></pre></td></tr></table></figure>
+<p><strong>测试结果：</strong><br><img src="/2017/08/08/Turing-Machine/result.png" alt=""></p>
 
         </div>
         <footer class="article-footer">
@@ -140,7 +192,7 @@
 
 
 
-    <a data-url="http://yoursite.com/about/index.html" data-id="cj63jixj400012wlkdi5jpzmw" class="article-share-link"><i class="fa fa-share"></i>Share</a>
+    <a data-url="http://yoursite.com/2017/08/08/Turing-Machine/" data-id="cj63jixjh00022wlks678kpsp" class="article-share-link"><i class="fa fa-share"></i>Share</a>
 <script>
     (function ($) {
         $('body').on('click', function() {
@@ -233,6 +285,19 @@
             
         </ul>
     </div>
+    
+        
+<nav id="article-nav">
+    
+    
+        <a href="/2017/08/07/Week-Summary-3/" id="article-nav-older" class="article-nav-link-wrap">
+        <strong class="article-nav-caption">older</strong>
+        <p class="article-nav-title">Week Summary 3</p>
+        <i class="icon fa fa-chevron-left" id="icon-chevron-left"></i>
+        </a>
+    
+</nav>
+
     
     <div class="widgets-container">
         
@@ -416,7 +481,7 @@
     var disqus_shortname = 'hexo-theme-hueman';
     
     
-    var disqus_url = 'http://yoursite.com/about/index.html';
+    var disqus_url = 'http://yoursite.com/2017/08/08/Turing-Machine/';
     
     (function() {
     var dsq = document.createElement('script');
