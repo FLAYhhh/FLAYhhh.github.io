@@ -11,8 +11,6 @@ toc:
   beginning: true
 ---
 
-# 匿名映射Mmap在多进程共享下的行为分析
-
 
 ## 本文背景
 在PT-BM项目中, 我们需要借助操作系统页表实现数据库系统的Buffer Table. 我们选择了基于PostgreSQL实现一个原型系统. 然而PG使用多进程工作模式, 而通常情况下, 进程之间是不共享页表的, 所以我们无法将原本buffer descriptor中的元信息(如dirty位, 引用计数...)放在单个进程的页表项中.

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: 
+title:
 date: 2023-07-12 13:10:00+0800
 description:
 categories: PG
@@ -10,8 +10,6 @@ related_posts: false
 toc:
   beginning: true
 ---
-
-# PTBM Design Details (1): Buffer Pool中内存页标识符的重新设计 & 多文件地址映射管理
 
 ## 1. BufferDesc & ptedit_pte_t
 

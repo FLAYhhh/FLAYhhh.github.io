@@ -1,17 +1,15 @@
 ---
 layout: post
-title: 
+title: Postgresql Shared Hash Table
 date: 2023-07-12 10:30:00+0800
 description:
 categories: PG
-tags: Hash
+tags: Hash, PT-BM
 giscus_comments: true
 related_posts: false
 toc:
   beginning: true
 ---
-
-# Postgresql Shared Hash Table
 
 ![pg_hashtable.png](/assets/img/pg_hashtable.png)
 
