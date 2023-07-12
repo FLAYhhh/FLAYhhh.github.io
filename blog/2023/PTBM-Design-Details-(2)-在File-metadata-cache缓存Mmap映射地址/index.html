@@ -1,0 +1,710 @@
+<!DOCTYPE html> <html lang="en"> <head> <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"> <meta http-equiv="X-UA-Compatible" content="IE=edge"> <title>Ptbm design details (2): 在file metadata cache缓存mmap映射地址 | Hao Luan</title> <meta name="author" content="Hao Luan"> <meta name="description" content="A system programmer and resercher's blog. "> <link href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha256-DF7Zhf293AJxJNTmh5zhoYYIMs2oXitRfBjY+9L//AY=" crossorigin="anonymous"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/css/mdb.min.css" integrity="sha256-jpjYvU3G3N6nrrBwXJoVEYI/0zw8htfFnhT9ljN3JJw=" crossorigin="anonymous"> <link defer rel="stylesheet" href="https://unpkg.com/bootstrap-table@1.21.4/dist/bootstrap-table.min.css"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" integrity="sha256-HtsXJanqjKTc8vVQjO4YMhiqFoXkfBsjBWcX91T1jr8=" crossorigin="anonymous"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/academicons@1.9.1/css/academicons.min.css" integrity="sha256-i1+4qU2G2860dGGIOJscdC30s9beBXjFfzjWLjBRsBg=" crossorigin="anonymous"> <link rel="stylesheet" type="text/css" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700|Roboto+Slab:100,300,400,500,700|Material+Icons"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jwarby/jekyll-pygments-themes@master/github.css" media="" id="highlight_theme_light"> <link href="https://cdn.rawgit.com/afeld/bootstrap-toc/v1.0.1/dist/bootstrap-toc.min.css" rel="stylesheet"> <link rel="stylesheet" href="/assets/css/main.css"> <link rel="canonical" href="https://flayhhh.github.io/blog/2023/PTBM-Design-Details-(2)-%E5%9C%A8File-metadata-cache%E7%BC%93%E5%AD%98Mmap%E6%98%A0%E5%B0%84%E5%9C%B0%E5%9D%80/"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jwarby/jekyll-pygments-themes@master/native.css" media="none" id="highlight_theme_dark"> <script src="/assets/js/theme.js"></script> <script src="/assets/js/dark_mode.js"></script> </head> <body class="fixed-top-nav "> <header> <nav id="navbar" class="navbar navbar-light navbar-expand-sm fixed-top"> <div class="container"> <a class="navbar-brand title font-weight-lighter" href="/"><span class="font-weight-bold">Hao </span>Luan</a> <button class="navbar-toggler collapsed ml-auto" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation"> <span class="sr-only">Toggle navigation</span> <span class="icon-bar top-bar"></span> <span class="icon-bar middle-bar"></span> <span class="icon-bar bottom-bar"></span> </button> <div class="collapse navbar-collapse text-right" id="navbarNav"> <ul class="navbar-nav ml-auto flex-nowrap"> <li class="nav-item "> <a class="nav-link" href="/">About</a> </li> <li class="nav-item active"> <a class="nav-link" href="/blog/">Hao Luan's blog<span class="sr-only">(current)</span></a> </li> <li class="nav-item "> <a class="nav-link" href="/CV/">CV</a> </li> <li class="nav-item "> <a class="nav-link" href="/Publications/">Publications</a> </li> <li class="nav-item "> <a class="nav-link" href="/Projects/">Projects</a> </li> <li class="toggle-container"> <button id="light-toggle" title="Change theme"> <i class="fas fa-moon"></i> <i class="fas fa-sun"></i> </button> </li> </ul> </div> </div> </nav> <progress id="progress" value="0"> <div class="progress-container"> <span class="progress-bar"></span> </div> </progress> </header> <div class="container mt-5"> <div class="row"> <div class="col-sm-3"> <nav id="toc-sidebar" class="sticky-top"></nav> </div> <div class="col-sm-9"> <div class="post"> <header class="post-header"> <h1 class="post-title">Ptbm design details (2): 在file metadata cache缓存mmap映射地址</h1> <p class="post-meta">July 12, 2023</p> <p class="post-tags"> <a href="/blog/2023"> <i class="fas fa-calendar fa-sm"></i> 2023 </a>   ·   <a href="/blog/tag/pt-bm"> <i class="fas fa-hashtag fa-sm"></i> PT-BM</a>     ·   <a href="/blog/category/pg"> <i class="fas fa-tag fa-sm"></i> PG</a>   </p> </header> <article class="post-content"> <div id="markdown-content"> <h2 id="1-背景">1. 背景</h2> <p>在Design Details(1)中我们提到, 可以通过一个基于哈希表的book keeper管理所有文件到虚拟地址空间的映射: FileNaming → Mapping range. 但是我们不希望每次对某个文件的page进行read, write时都去查询这个book keeper, 所以我们还需要将映射关系缓存到每个文件的metadata cache中.</p> <h2 id="2-在pg中找到表示file-metadata-cache的数据结构">2. 在PG中找到表示File metadata cache的数据结构</h2> <p>目前File metadata cache只是我们对Storage manager管理文件方式的一个假设, 所以需要在代码中找到真正表示它的数据结构.</p> <h3 id="21-readbuffer">2.1 ReadBuffer</h3> <p>我的思路是从ReadBuffer开始找. 因为ReadBuffer的语义是给次一个磁盘页的位置, 将其内容读取到buffer frame中. PG在给定磁盘页位置(其中必然包含了文件id)进行IO时, 可能会使用我们上面假设的File metadata cache结构. 例如, 其中可能会包含文件描述符. 如果有这个变量, 我们期望它在每个backend中是全局唯一的, 这样我们一旦将映射关系缓存到File metadata cache中, 如果映射关系不发生变化, 则其生命周期就会和backend的生命周期一样长.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * ReadBuffer -- a shorthand for ReadBufferExtended, for reading from main
+ *		fork with RBM_NORMAL mode and default strategy.
+ */</span>
+<span class="n">Buffer</span>
+<span class="nf">ReadBuffer</span><span class="p">(</span><span class="n">Relation</span> <span class="n">reln</span><span class="p">,</span> <span class="n">BlockNumber</span> <span class="n">blockNum</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="k">return</span> <span class="n">ReadBufferExtended</span><span class="p">(</span><span class="n">reln</span><span class="p">,</span> <span class="n">MAIN_FORKNUM</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">RBM_NORMAL</span><span class="p">,</span> <span class="nb">NULL</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="cm">/*
+ * ReadBufferExtended -- returns a buffer containing the requested
+ *		block of the requested relation.  If the blknum
+ *		requested is P_NEW, extend the relation file and
+ *		allocate a new block.  (Caller is responsible for
+ *		ensuring that only one backend tries to extend a
+ *		relation at the same time!)
+ *
+ * Returns: the buffer number for the buffer containing
+ *		the block read.  The returned buffer has been pinned.
+ *		Does not return on error --- elog's instead.
+ *
+ * Assume when this function is called, that reln has been opened already.
+ *
+ * In RBM_NORMAL mode, the page is read from disk, and the page header is
+ * validated.  An error is thrown if the page header is not valid.  (But
+ * note that an all-zero page is considered "valid"; see
+ * PageIsVerifiedExtended().)
+ *
+ * RBM_ZERO_ON_ERROR is like the normal mode, but if the page header is not
+ * valid, the page is zeroed instead of throwing an error. This is intended
+ * for non-critical data, where the caller is prepared to repair errors.
+ *
+ * In RBM_ZERO_AND_LOCK mode, if the page isn't in buffer cache already, it's
+ * filled with zeros instead of reading it from disk.  Useful when the caller
+ * is going to fill the page from scratch, since this saves I/O and avoids
+ * unnecessary failure if the page-on-disk has corrupt page headers.
+ * The page is returned locked to ensure that the caller has a chance to
+ * initialize the page before it's made visible to others.
+ * Caution: do not use this mode to read a page that is beyond the relation's
+ * current physical EOF; that is likely to cause problems in md.c when
+ * the page is modified and written out. P_NEW is OK, though.
+ *
+ * RBM_ZERO_AND_CLEANUP_LOCK is the same as RBM_ZERO_AND_LOCK, but acquires
+ * a cleanup-strength lock on the page.
+ *
+ * RBM_NORMAL_NO_LOG mode is treated the same as RBM_NORMAL here.
+ *
+ * If strategy is not NULL, a nondefault buffer access strategy is used.
+ * See buffer/README for details.
+ */</span>
+<span class="n">Buffer</span>
+<span class="nf">ReadBufferExtended</span><span class="p">(</span><span class="n">Relation</span> <span class="n">reln</span><span class="p">,</span> <span class="n">ForkNumber</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">BlockNumber</span> <span class="n">blockNum</span><span class="p">,</span>
+				   <span class="n">ReadBufferMode</span> <span class="n">mode</span><span class="p">,</span> <span class="n">BufferAccessStrategy</span> <span class="n">strategy</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="n">bool</span>		<span class="n">hit</span><span class="p">;</span>
+	<span class="n">Buffer</span>		<span class="n">buf</span><span class="p">;</span>
+
+	<span class="cm">/*
+	 * Reject attempts to read non-local temporary relations; we would be
+	 * likely to get wrong data since we have no visibility into the owning
+	 * session's local buffers.
+	 */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">RELATION_IS_OTHER_TEMP</span><span class="p">(</span><span class="n">reln</span><span class="p">))</span>
+		<span class="n">ereport</span><span class="p">(</span><span class="n">ERROR</span><span class="p">,</span>
+				<span class="p">(</span><span class="n">errcode</span><span class="p">(</span><span class="n">ERRCODE_FEATURE_NOT_SUPPORTED</span><span class="p">),</span>
+				 <span class="n">errmsg</span><span class="p">(</span><span class="s">"cannot access temporary tables of other sessions"</span><span class="p">)));</span>
+
+	<span class="cm">/*
+	 * Read the buffer, and update pgstat counters to reflect a cache hit or
+	 * miss.
+	 */</span>
+	<span class="n">pgstat_count_buffer_read</span><span class="p">(</span><span class="n">reln</span><span class="p">);</span>
+	<span class="n">buf</span> <span class="o">=</span> <span class="n">ReadBuffer_common</span><span class="p">(</span><span class="n">RelationGetSmgr</span><span class="p">(</span><span class="n">reln</span><span class="p">),</span> <span class="n">reln</span><span class="o">-&gt;</span><span class="n">rd_rel</span><span class="o">-&gt;</span><span class="n">relpersistence</span><span class="p">,</span>
+							<span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">mode</span><span class="p">,</span> <span class="n">strategy</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">hit</span><span class="p">);</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">hit</span><span class="p">)</span>
+		<span class="n">pgstat_count_buffer_hit</span><span class="p">(</span><span class="n">reln</span><span class="p">);</span>
+	<span class="k">return</span> <span class="n">buf</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="cm">/*
+ * ReadBufferWithoutRelcache -- like ReadBufferExtended, but doesn't require
+ *		a relcache entry for the relation.
+ *
+ * Pass permanent = true for a RELPERSISTENCE_PERMANENT relation, and
+ * permanent = false for a RELPERSISTENCE_UNLOGGED relation. This function
+ * cannot be used for temporary relations (and making that work might be
+ * difficult, unless we only want to read temporary relations for our own
+ * BackendId).
+ */</span>
+<span class="n">Buffer</span>
+<span class="nf">ReadBufferWithoutRelcache</span><span class="p">(</span><span class="n">RelFileLocator</span> <span class="n">rlocator</span><span class="p">,</span> <span class="n">ForkNumber</span> <span class="n">forkNum</span><span class="p">,</span>
+						  <span class="n">BlockNumber</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">ReadBufferMode</span> <span class="n">mode</span><span class="p">,</span>
+						  <span class="n">BufferAccessStrategy</span> <span class="n">strategy</span><span class="p">,</span> <span class="n">bool</span> <span class="n">permanent</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="n">bool</span>		<span class="n">hit</span><span class="p">;</span>
+
+	<span class="n">SMgrRelation</span> <span class="n">smgr</span> <span class="o">=</span> <span class="n">smgropen</span><span class="p">(</span><span class="n">rlocator</span><span class="p">,</span> <span class="n">InvalidBackendId</span><span class="p">);</span>
+
+	<span class="k">return</span> <span class="n">ReadBuffer_common</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">permanent</span> <span class="o">?</span> <span class="n">RELPERSISTENCE_PERMANENT</span> <span class="o">:</span>
+							 <span class="n">RELPERSISTENCE_UNLOGGED</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+							 <span class="n">mode</span><span class="p">,</span> <span class="n">strategy</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">hit</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div> <blockquote> <p>每个Relation有多个Fork, 每个Fork对应一个或多个文件. 可以参考: <a href="https://blog.devgenius.io/postgres-15-internals-2-files-and-forks-e2cc6da4695d" rel="external nofollow noopener" target="_blank">Postgres 15 internals #2: Files and forks</a></p> </blockquote> <p>我们感兴趣的是pg如何使用relation和fork找到对应的文件:</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">buf</span> <span class="o">=</span> <span class="n">ReadBuffer_common</span><span class="p">(</span><span class="n">RelationGetSmgr</span><span class="p">(</span><span class="n">reln</span><span class="p">),</span> <span class="n">reln</span><span class="o">-&gt;</span><span class="n">rd_rel</span><span class="o">-&gt;</span><span class="n">relpersistence</span><span class="p">,</span>
+							<span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">mode</span><span class="p">,</span> <span class="n">strategy</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">hit</span><span class="p">);</span>
+</code></pre></div></div> <p>可以看到到这里为止forkNum没有变化, 但是reln转换成了RelationGetSmgr(reln)传递给ReadBuffer_common.</p> <p>我们首先看一看RelationGetSmgr, 然后再看一看ReadBuffer_common.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * RelationGetSmgr
+ *		Returns smgr file handle for a relation, opening it if needed.
+ *
+ * Very little code is authorized to touch rel-&gt;rd_smgr directly.  Instead
+ * use this function to fetch its value.
+ *
+ * Note: since a relcache flush can cause the file handle to be closed again,
+ * it's unwise to hold onto the pointer returned by this function for any
+ * long period.  Recommended practice is to just re-execute RelationGetSmgr
+ * each time you need to access the SMgrRelation.  It's quite cheap in
+ * comparison to whatever an smgr function is going to do.
+ */</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="n">SMgrRelation</span>
+<span class="nf">RelationGetSmgr</span><span class="p">(</span><span class="n">Relation</span> <span class="n">rel</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">unlikely</span><span class="p">(</span><span class="n">rel</span><span class="o">-&gt;</span><span class="n">rd_smgr</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">))</span>
+		<span class="n">smgrsetowner</span><span class="p">(</span><span class="o">&amp;</span><span class="p">(</span><span class="n">rel</span><span class="o">-&gt;</span><span class="n">rd_smgr</span><span class="p">),</span> <span class="n">smgropen</span><span class="p">(</span><span class="n">rel</span><span class="o">-&gt;</span><span class="n">rd_locator</span><span class="p">,</span> <span class="n">rel</span><span class="o">-&gt;</span><span class="n">rd_backend</span><span class="p">));</span>
+	<span class="k">return</span> <span class="n">rel</span><span class="o">-&gt;</span><span class="n">rd_smgr</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div> <blockquote> <p>relcache flush会导致file handle即rel→rd_smgr关闭, 如果仍然有人使用rel→rd_smgr怎么办?</p> </blockquote> <p>稍微看一看smgropen和smgrsetowner.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">为了阅读</span><span class="n">sgmropen</span><span class="p">,</span> <span class="err">熟悉需要熟悉几个类型</span><span class="p">.</span> 
+
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">RelationData</span> <span class="o">*</span><span class="n">Relation</span><span class="p">;</span>
+
+<span class="cm">/*
+ * Here are the contents of a relation cache entry.
+ */</span>
+
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">RelationData</span>
+<span class="p">{</span>
+	<span class="n">RelFileLocator</span> <span class="n">rd_locator</span><span class="p">;</span>	<span class="cm">/* relation physical identifier */</span>
+	<span class="n">SMgrRelation</span> <span class="n">rd_smgr</span><span class="p">;</span>		<span class="cm">/* cached file handle, or NULL */</span>
+	<span class="kt">int</span>			<span class="n">rd_refcnt</span><span class="p">;</span>		<span class="cm">/* reference count */</span>
+	<span class="n">BackendId</span>	<span class="n">rd_backend</span><span class="p">;</span>		<span class="cm">/* owning backend id, if temporary relation */</span>
+	<span class="n">bool</span>		<span class="n">rd_islocaltemp</span><span class="p">;</span> <span class="cm">/* rel is a temp rel of this session */</span>
+	<span class="n">bool</span>		<span class="n">rd_isnailed</span><span class="p">;</span>	<span class="cm">/* rel is nailed in cache */</span>
+	<span class="n">bool</span>		<span class="n">rd_isvalid</span><span class="p">;</span>		<span class="cm">/* relcache entry is valid */</span>
+	<span class="n">bool</span>		<span class="n">rd_indexvalid</span><span class="p">;</span>	<span class="cm">/* is rd_indexlist valid? (also rd_pkindex and
+								 * rd_replidindex) */</span>
+	<span class="n">bool</span>		<span class="n">rd_statvalid</span><span class="p">;</span>	<span class="cm">/* is rd_statlist valid? */</span>
+
+  <span class="p">...</span>
+<span class="p">}</span> <span class="n">RelationData</span><span class="p">;</span>
+
+<span class="cm">/*
+ * Augmenting a relfilelocator with the backend ID provides all the information
+ * we need to locate the physical storage.  The backend ID is InvalidBackendId
+ * for regular relations (those accessible to more than one backend), or the
+ * owning backend's ID for backend-local relations.  Backend-local relations
+ * are always transient and removed in case of a database crash; they are
+ * never WAL-logged or fsync'd.
+ */</span>
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">RelFileLocatorBackend</span>
+<span class="p">{</span>
+	<span class="n">RelFileLocator</span> <span class="n">locator</span><span class="p">;</span>
+	<span class="n">BackendId</span>	<span class="n">backend</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">RelFileLocatorBackend</span><span class="p">;</span>
+
+<span class="k">typedef</span> <span class="n">SMgrRelationData</span> <span class="o">*</span><span class="n">SMgrRelation</span><span class="p">;</span>
+
+<span class="cm">/*
+ * smgr.c maintains a table of SMgrRelation objects, which are essentially
+ * cached file handles.  An SMgrRelation is created (if not already present)
+ * by smgropen(), and destroyed by smgrclose().  Note that neither of these
+ * operations imply I/O, they just create or destroy a hashtable entry.
+ * (But smgrclose() may release associated resources, such as OS-level file
+ * descriptors.)
+ *
+ * An SMgrRelation may have an "owner", which is just a pointer to it from
+ * somewhere else; smgr.c will clear this pointer if the SMgrRelation is
+ * closed.  We use this to avoid dangling pointers from relcache to smgr
+ * without having to make the smgr explicitly aware of relcache.  There
+ * can't be more than one "owner" pointer per SMgrRelation, but that's
+ * all we need.
+ *
+ * SMgrRelations that do not have an "owner" are considered to be transient,
+ * and are deleted at end of transaction.
+ */</span>
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">SMgrRelationData</span>
+<span class="p">{</span>
+	<span class="cm">/* rlocator is the hashtable lookup key, so it must be first! */</span>
+	<span class="n">RelFileLocatorBackend</span> <span class="n">smgr_rlocator</span><span class="p">;</span>	<span class="cm">/* relation physical identifier */</span>
+
+	<span class="cm">/* pointer to owning pointer, or NULL if none */</span>
+	<span class="k">struct</span> <span class="n">SMgrRelationData</span> <span class="o">**</span><span class="n">smgr_owner</span><span class="p">;</span>
+
+	<span class="cm">/*
+	 * The following fields are reset to InvalidBlockNumber upon a cache flush
+	 * event, and hold the last known size for each fork.  This information is
+	 * currently only reliable during recovery, since there is no cache
+	 * invalidation for fork extension.
+	 */</span>
+	<span class="n">BlockNumber</span> <span class="n">smgr_targblock</span><span class="p">;</span> <span class="cm">/* current insertion target block */</span>
+	<span class="n">BlockNumber</span> <span class="n">smgr_cached_nblocks</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span>	<span class="cm">/* last known size */</span>
+
+	<span class="cm">/* additional public fields may someday exist here */</span>
+
+	<span class="cm">/*
+	 * Fields below here are intended to be private to smgr.c and its
+	 * submodules.  Do not touch them from elsewhere.
+	 */</span>
+	<span class="kt">int</span>			<span class="n">smgr_which</span><span class="p">;</span>		<span class="cm">/* storage manager selector */</span>
+
+	<span class="cm">/*
+	 * for md.c; per-fork arrays of the number of open segments
+	 * (md_num_open_segs) and the segments themselves (md_seg_fds).
+	 */</span>
+	<span class="kt">int</span>			<span class="n">md_num_open_segs</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span>
+	<span class="k">struct</span> <span class="n">_MdfdVec</span> <span class="o">*</span><span class="n">md_seg_fds</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span>
+
+	<span class="cm">/* if unowned, list link in list of all unowned SMgrRelations */</span>
+	<span class="n">dlist_node</span>	<span class="n">node</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">SMgrRelationData</span><span class="p">;</span>
+
+<span class="cm">/*
+ * smgropen() -- Return an SMgrRelation object, creating it if need be.
+ *
+ * This does not attempt to actually open the underlying file.
+ */</span>
+<span class="n">SMgrRelation</span>
+<span class="nf">smgropen</span><span class="p">(</span><span class="n">RelFileLocator</span> <span class="n">rlocator</span><span class="p">,</span> <span class="n">BackendId</span> <span class="n">backend</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="n">RelFileLocatorBackend</span> <span class="n">brlocator</span><span class="p">;</span>
+	<span class="n">SMgrRelation</span> <span class="n">reln</span><span class="p">;</span>
+	<span class="n">bool</span>		<span class="n">found</span><span class="p">;</span>
+
+	<span class="k">if</span> <span class="p">(</span><span class="n">SMgrRelationHash</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="cm">/* First time through: initialize the hash table */</span>
+		<span class="n">HASHCTL</span>		<span class="n">ctl</span><span class="p">;</span>
+
+		<span class="n">ctl</span><span class="p">.</span><span class="n">keysize</span> <span class="o">=</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">RelFileLocatorBackend</span><span class="p">);</span>
+		<span class="n">ctl</span><span class="p">.</span><span class="n">entrysize</span> <span class="o">=</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">SMgrRelationData</span><span class="p">);</span>
+		<span class="n">SMgrRelationHash</span> <span class="o">=</span> <span class="n">hash_create</span><span class="p">(</span><span class="s">"smgr relation table"</span><span class="p">,</span> <span class="mi">400</span><span class="p">,</span>
+									   <span class="o">&amp;</span><span class="n">ctl</span><span class="p">,</span> <span class="n">HASH_ELEM</span> <span class="o">|</span> <span class="n">HASH_BLOBS</span><span class="p">);</span>
+		<span class="n">dlist_init</span><span class="p">(</span><span class="o">&amp;</span><span class="n">unowned_relns</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="cm">/* Look up or create an entry */</span>
+	<span class="n">brlocator</span><span class="p">.</span><span class="n">locator</span> <span class="o">=</span> <span class="n">rlocator</span><span class="p">;</span>
+	<span class="n">brlocator</span><span class="p">.</span><span class="n">backend</span> <span class="o">=</span> <span class="n">backend</span><span class="p">;</span>
+	<span class="n">reln</span> <span class="o">=</span> <span class="p">(</span><span class="n">SMgrRelation</span><span class="p">)</span> <span class="n">hash_search</span><span class="p">(</span><span class="n">SMgrRelationHash</span><span class="p">,</span>
+									  <span class="o">&amp;</span><span class="n">brlocator</span><span class="p">,</span>
+									  <span class="n">HASH_ENTER</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">found</span><span class="p">);</span>
+
+	<span class="cm">/* Initialize it if not present before */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">found</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="cm">/* hash_search already filled in the lookup key */</span>
+		<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_owner</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+		<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_targblock</span> <span class="o">=</span> <span class="n">InvalidBlockNumber</span><span class="p">;</span>
+		<span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;=</span> <span class="n">MAX_FORKNUM</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span><span class="p">)</span>
+			<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_cached_nblocks</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">InvalidBlockNumber</span><span class="p">;</span>
+		<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_which</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>	<span class="cm">/* we only have md.c at present */</span>
+
+		<span class="cm">/* implementation-specific initialization */</span>
+		<span class="n">smgrsw</span><span class="p">[</span><span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_which</span><span class="p">].</span><span class="n">smgr_open</span><span class="p">(</span><span class="n">reln</span><span class="p">);</span>
+
+		<span class="cm">/* it has no owner yet */</span>
+		<span class="n">dlist_push_tail</span><span class="p">(</span><span class="o">&amp;</span><span class="n">unowned_relns</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">reln</span><span class="o">-&gt;</span><span class="n">node</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="k">return</span> <span class="n">reln</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div> <p>关键数据结构: <strong>SMgrRelationHash</strong></p> <p>这个哈希表的映射关系为: RelFileLocatorBackend (关系)→ SMgrRelationData(文件句柄).</p> <p>另外通过unowned_relns将所有没有拥有者的SMgrRelationData链接起来.</p> <p>所有打开的relation都会被缓存到哈希表中, 在smgr_open中, 如果没有在哈希表中查询到relation, 则新创建一个entry, 并将其放入unowned_relns中. 另外还需要调用smgrsw[reln→smgr_which].smgr_open(). 选择具体设备的操作进行open.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="k">const</span> <span class="n">f_smgr</span> <span class="n">smgrsw</span><span class="p">[]</span> <span class="o">=</span> <span class="p">{</span>
+	<span class="cm">/* magnetic disk */</span>
+	<span class="p">{</span>
+		<span class="p">.</span><span class="n">smgr_init</span> <span class="o">=</span> <span class="n">mdinit</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_shutdown</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_open</span> <span class="o">=</span> <span class="n">mdopen</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_close</span> <span class="o">=</span> <span class="n">mdclose</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_create</span> <span class="o">=</span> <span class="n">mdcreate</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_exists</span> <span class="o">=</span> <span class="n">mdexists</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_unlink</span> <span class="o">=</span> <span class="n">mdunlink</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_extend</span> <span class="o">=</span> <span class="n">mdextend</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_zeroextend</span> <span class="o">=</span> <span class="n">mdzeroextend</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_prefetch</span> <span class="o">=</span> <span class="n">mdprefetch</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_read</span> <span class="o">=</span> <span class="n">mdread</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_write</span> <span class="o">=</span> <span class="n">mdwrite</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_writeback</span> <span class="o">=</span> <span class="n">mdwriteback</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_nblocks</span> <span class="o">=</span> <span class="n">mdnblocks</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_truncate</span> <span class="o">=</span> <span class="n">mdtruncate</span><span class="p">,</span>
+		<span class="p">.</span><span class="n">smgr_immedsync</span> <span class="o">=</span> <span class="n">mdimmedsync</span><span class="p">,</span>
+	<span class="p">}</span>
+<span class="p">};</span>
+</code></pre></div></div> <p>通常reln→smgr_which的值为0. 默认为磁盘.</p> <p>继续阅读mdopen的代码:</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * mdopen() -- Initialize newly-opened relation.
+ */</span>
+<span class="kt">void</span>
+<span class="nf">mdopen</span><span class="p">(</span><span class="n">SMgrRelation</span> <span class="n">reln</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="cm">/* mark it not open */</span>
+	<span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">forknum</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">forknum</span> <span class="o">&lt;=</span> <span class="n">MAX_FORKNUM</span><span class="p">;</span> <span class="n">forknum</span><span class="o">++</span><span class="p">)</span>
+		<span class="n">reln</span><span class="o">-&gt;</span><span class="n">md_num_open_segs</span><span class="p">[</span><span class="n">forknum</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div> <p>现在看reln→md_num_open_segs[forknum]还是有点抽象, 所以还需要再探SMgrRelationData中的两个成员:</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">SMgrRelationData</span> <span class="p">{</span>
+<span class="p">...</span>
+  <span class="cm">/*
+	 * for md.c; per-fork arrays of the number of open segments
+	 * (md_num_open_segs) and the segments themselves (md_seg_fds).
+	 */</span>
+	<span class="kt">int</span>			<span class="n">md_num_open_segs</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span> <span class="c1">// 每个fork打开的segment(文件)数量</span>
+	<span class="k">struct</span> <span class="n">_MdfdVec</span> <span class="o">*</span><span class="n">md_seg_fds</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span> <span class="c1">// 每个fork都对应一个_MdfdVec数组,</span>
+                                           <span class="c1">// 数组中每个元素为segment</span>
+																					 <span class="c1">//(包含segment编号和该segment的fd)</span>
+<span class="p">...</span>
+<span class="p">};</span>
+
+<span class="err">以及</span> <span class="k">struct</span> <span class="n">_MdfdVec</span><span class="err">的定义</span><span class="o">:</span>
+
+<span class="cm">/*
+ * The magnetic disk storage manager keeps track of open file
+ * descriptors in its own descriptor pool.  This is done to make it
+ * easier to support relations that are larger than the operating
+ * system's file size limit (often 2GBytes).  In order to do that,
+ * we break relations up into "segment" files that are each shorter than
+ * the OS file size limit.  The segment size is set by the RELSEG_SIZE
+ * configuration constant in pg_config.h.
+ *
+ * On disk, a relation must consist of consecutively numbered segment
+ * files in the pattern
+ *	-- Zero or more full segments of exactly RELSEG_SIZE blocks each
+ *	-- Exactly one partial segment of size 0 &lt;= size &lt; RELSEG_SIZE blocks
+ *	-- Optionally, any number of inactive segments of size 0 blocks.
+ * The full and partial segments are collectively the "active" segments.
+ * Inactive segments are those that once contained data but are currently
+ * not needed because of an mdtruncate() operation.  The reason for leaving
+ * them present at size zero, rather than unlinking them, is that other
+ * backends and/or the checkpointer might be holding open file references to
+ * such segments.  If the relation expands again after mdtruncate(), such
+ * that a deactivated segment becomes active again, it is important that
+ * such file references still be valid --- else data might get written
+ * out to an unlinked old copy of a segment file that will eventually
+ * disappear.
+ *
+ * File descriptors are stored in the per-fork md_seg_fds arrays inside
+ * SMgrRelation. The length of these arrays is stored in md_num_open_segs.
+ * Note that a fork's md_num_open_segs having a specific value does not
+ * necessarily mean the relation doesn't have additional segments; we may
+ * just not have opened the next segment yet.  (We could not have "all
+ * segments are in the array" as an invariant anyway, since another backend
+ * could extend the relation while we aren't looking.)  We do not have
+ * entries for inactive segments, however; as soon as we find a partial
+ * segment, we assume that any subsequent segments are inactive.
+ *
+ * The entire MdfdVec array is palloc'd in the MdCxt memory context.
+ */</span>
+
+<span class="k">typedef</span> <span class="k">struct</span> <span class="n">_MdfdVec</span>
+<span class="p">{</span>
+	<span class="n">File</span>		<span class="n">mdfd_vfd</span><span class="p">;</span>		<span class="cm">/* fd number in fd.c's pool */</span>
+	<span class="n">BlockNumber</span> <span class="n">mdfd_segno</span><span class="p">;</span>		<span class="cm">/* segment number, from 0 */</span>
+<span class="p">}</span> <span class="n">MdfdVec</span><span class="p">;</span>
+</code></pre></div></div> <p>现在清楚mdopen将relation的所有fork中打开的segment数量置为0.</p> <p>回到smgropen()这个函数, 它只是在哈希表中创建了一个SMgrRelationData entry, 并将其放入了一个无拥有者的链表中. 另外将该relation每个fork中的open segments数量置为0.</p> <p>接下来看ReadBuffer_common:</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * ReadBuffer_common -- common logic for all ReadBuffer variants
+ *
+ * *hit is set to true if the request was satisfied from shared buffer cache.
+ */</span>
+<span class="k">static</span> <span class="n">Buffer</span>
+<span class="nf">ReadBuffer_common</span><span class="p">(</span><span class="n">SMgrRelation</span> <span class="n">smgr</span><span class="p">,</span> <span class="kt">char</span> <span class="n">relpersistence</span><span class="p">,</span> <span class="n">ForkNumber</span> <span class="n">forkNum</span><span class="p">,</span>
+				  <span class="n">BlockNumber</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">ReadBufferMode</span> <span class="n">mode</span><span class="p">,</span>
+				  <span class="n">BufferAccessStrategy</span> <span class="n">strategy</span><span class="p">,</span> <span class="n">bool</span> <span class="o">*</span><span class="n">hit</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="p">...</span>
+	<span class="cm">/*
+	 * Read in the page, unless the caller intends to overwrite it and just
+	 * wants us to allocate a buffer.
+	 */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_LOCK</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_CLEANUP_LOCK</span><span class="p">)</span>
+		<span class="n">MemSet</span><span class="p">((</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="n">bufBlock</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">);</span>
+	<span class="k">else</span>
+	<span class="p">{</span>
+		<span class="p">...</span>
+		<span class="o">***</span><span class="n">smgrread</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">bufBlock</span><span class="p">);</span><span class="o">***</span>
+		<span class="p">...</span>
+	<span class="p">}</span>
+
+  <span class="p">...</span>
+	<span class="p">{</span>
+		<span class="cm">/* Set BM_VALID, terminate IO, and wake up any waiters */</span>
+		<span class="n">TerminateBufferIO</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">,</span> <span class="nb">false</span><span class="p">,</span> <span class="n">BM_VALID</span><span class="p">);</span>
+	<span class="p">}</span>
+  <span class="p">...</span>
+	<span class="k">return</span> <span class="n">BufferDescriptorGetBuffer</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div> <p>具体代码参见附录A.1, 本文的重点是找到合适的file handle cache, 目前看来SMgrRelationData担任了这个角色, smgropen中只是初始化了smgr的成员, 现在期望通过详细观察sgmrread能够理清smgr的在io流程中的具体作用.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="p">.</span><span class="n">smgr_read</span> <span class="o">=</span> <span class="n">mdread</span>
+
+<span class="cm">/*
+ * mdread() -- Read the specified block from a relation.
+ */</span>
+<span class="kt">void</span>
+<span class="nf">mdread</span><span class="p">(</span><span class="n">SMgrRelation</span> <span class="n">reln</span><span class="p">,</span> <span class="n">ForkNumber</span> <span class="n">forknum</span><span class="p">,</span> <span class="n">BlockNumber</span> <span class="n">blocknum</span><span class="p">,</span>
+	   <span class="kt">void</span> <span class="o">*</span><span class="n">buffer</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="kt">off_t</span>		<span class="n">seekpos</span><span class="p">;</span>
+	<span class="kt">int</span>			<span class="n">nbytes</span><span class="p">;</span>
+	<span class="n">MdfdVec</span>    <span class="o">*</span><span class="n">v</span><span class="p">;</span>
+
+	<span class="cm">/* If this build supports direct I/O, the buffer must be I/O aligned. */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">PG_O_DIRECT</span> <span class="o">!=</span> <span class="mi">0</span> <span class="o">&amp;&amp;</span> <span class="n">PG_IO_ALIGN_SIZE</span> <span class="o">&lt;=</span> <span class="n">BLCKSZ</span><span class="p">)</span>
+		<span class="n">Assert</span><span class="p">((</span><span class="kt">uintptr_t</span><span class="p">)</span> <span class="n">buffer</span> <span class="o">==</span> <span class="n">TYPEALIGN</span><span class="p">(</span><span class="n">PG_IO_ALIGN_SIZE</span><span class="p">,</span> <span class="n">buffer</span><span class="p">));</span>
+
+	<span class="n">TRACE_POSTGRESQL_SMGR_MD_READ_START</span><span class="p">(</span><span class="n">forknum</span><span class="p">,</span> <span class="n">blocknum</span><span class="p">,</span>
+										<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">spcOid</span><span class="p">,</span>
+										<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">dbOid</span><span class="p">,</span>
+										<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">relNumber</span><span class="p">,</span>
+										<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">backend</span><span class="p">);</span>
+
+	<span class="n">v</span> <span class="o">=</span> <span class="n">_mdfd_getseg</span><span class="p">(</span><span class="n">reln</span><span class="p">,</span> <span class="n">forknum</span><span class="p">,</span> <span class="n">blocknum</span><span class="p">,</span> <span class="nb">false</span><span class="p">,</span>
+					 <span class="n">EXTENSION_FAIL</span> <span class="o">|</span> <span class="n">EXTENSION_CREATE_RECOVERY</span><span class="p">);</span>
+
+	<span class="n">seekpos</span> <span class="o">=</span> <span class="p">(</span><span class="kt">off_t</span><span class="p">)</span> <span class="n">BLCKSZ</span> <span class="o">*</span> <span class="p">(</span><span class="n">blocknum</span> <span class="o">%</span> <span class="p">((</span><span class="n">BlockNumber</span><span class="p">)</span> <span class="n">RELSEG_SIZE</span><span class="p">));</span>
+
+	<span class="n">Assert</span><span class="p">(</span><span class="n">seekpos</span> <span class="o">&lt;</span> <span class="p">(</span><span class="kt">off_t</span><span class="p">)</span> <span class="n">BLCKSZ</span> <span class="o">*</span> <span class="n">RELSEG_SIZE</span><span class="p">);</span>
+
+	<span class="n">nbytes</span> <span class="o">=</span> <span class="n">FileRead</span><span class="p">(</span><span class="n">v</span><span class="o">-&gt;</span><span class="n">mdfd_vfd</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">,</span> <span class="n">seekpos</span><span class="p">,</span> <span class="n">WAIT_EVENT_DATA_FILE_READ</span><span class="p">);</span>
+
+	<span class="n">TRACE_POSTGRESQL_SMGR_MD_READ_DONE</span><span class="p">(</span><span class="n">forknum</span><span class="p">,</span> <span class="n">blocknum</span><span class="p">,</span>
+									   <span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">spcOid</span><span class="p">,</span>
+									   <span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">dbOid</span><span class="p">,</span>
+									   <span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">relNumber</span><span class="p">,</span>
+									   <span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">backend</span><span class="p">,</span>
+									   <span class="n">nbytes</span><span class="p">,</span>
+									   <span class="n">BLCKSZ</span><span class="p">);</span>
+
+	<span class="k">if</span> <span class="p">(</span><span class="n">nbytes</span> <span class="o">!=</span> <span class="n">BLCKSZ</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="k">if</span> <span class="p">(</span><span class="n">nbytes</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">)</span>
+			<span class="n">ereport</span><span class="p">(</span><span class="n">ERROR</span><span class="p">,</span>
+					<span class="p">(</span><span class="n">errcode_for_file_access</span><span class="p">(),</span>
+					 <span class="n">errmsg</span><span class="p">(</span><span class="s">"could not read block %u in file </span><span class="se">\"</span><span class="s">%s</span><span class="se">\"</span><span class="s">: %m"</span><span class="p">,</span>
+							<span class="n">blocknum</span><span class="p">,</span> <span class="n">FilePathName</span><span class="p">(</span><span class="n">v</span><span class="o">-&gt;</span><span class="n">mdfd_vfd</span><span class="p">))));</span>
+
+		<span class="cm">/*
+		 * Short read: we are at or past EOF, or we read a partial block at
+		 * EOF.  Normally this is an error; upper levels should never try to
+		 * read a nonexistent block.  However, if zero_damaged_pages is ON or
+		 * we are InRecovery, we should instead return zeroes without
+		 * complaining.  This allows, for example, the case of trying to
+		 * update a block that was later truncated away.
+		 */</span>
+		<span class="k">if</span> <span class="p">(</span><span class="n">zero_damaged_pages</span> <span class="o">||</span> <span class="n">InRecovery</span><span class="p">)</span>
+			<span class="n">MemSet</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">);</span>
+		<span class="k">else</span>
+			<span class="n">ereport</span><span class="p">(</span><span class="n">ERROR</span><span class="p">,</span>
+					<span class="p">(</span><span class="n">errcode</span><span class="p">(</span><span class="n">ERRCODE_DATA_CORRUPTED</span><span class="p">),</span>
+					 <span class="n">errmsg</span><span class="p">(</span><span class="s">"could not read block %u in file </span><span class="se">\"</span><span class="s">%s</span><span class="se">\"</span><span class="s">: read only %d of %d bytes"</span><span class="p">,</span>
+							<span class="n">blocknum</span><span class="p">,</span> <span class="n">FilePathName</span><span class="p">(</span><span class="n">v</span><span class="o">-&gt;</span><span class="n">mdfd_vfd</span><span class="p">),</span>
+							<span class="n">nbytes</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">)));</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div> <p>md_read调用_mdfd_getseg初始化文件描述符.</p> <p>看到这里, 基本达到了寻找File metadata cache的目的. pg中File meta data cache就是SMgrRelationData.</p> <p>熟悉SMgrRelationData后, 需要纠正一些Book keeper中的设计.</p> <ul> <li>不能以文件为单位管理映射, 因为一个Fork可能有多个segment组成, 但是这些segment虽然是不同的文件, 但是IO空间相同. 所以book keeper中应该以relation + fork作为key, 映射到特定relation的特定fork对应的虚拟地址空间.</li> </ul> <h2 id="3-ptbm对smgrrelationdata的修改">3. PTBM对SMgrRelationData的修改</h2> <p>需要新增成员数组: <strong><em>md_fork_mapping_start</em></strong></p> <ul> <li>NULL值为无效值, 说明还没有建立映射.</li> <li>非NULL值为该fork在shared memory中的映射地址.</li> </ul> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">SMgrRelationData</span> <span class="p">{</span>
+<span class="p">...</span>
+  <span class="cm">/*
+	 * for md.c; per-fork arrays of the number of open segments
+	 * (md_num_open_segs) and the segments themselves (md_seg_fds).
+	 */</span>
+	<span class="kt">int</span>			<span class="n">md_num_open_segs</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span> <span class="c1">// 每个fork打开的segment(文件)数量</span>
+	<span class="k">struct</span> <span class="n">_MdfdVec</span> <span class="o">*</span><span class="n">md_seg_fds</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span> <span class="c1">// 每个fork都对应一个_MdfdVec数组,</span>
+                                           <span class="c1">// 数组中每个元素为segment</span>
+																					 <span class="c1">//(包含segment编号和该segment的fd)</span>
+  <span class="o">***</span><span class="kt">void</span> <span class="o">*</span><span class="n">md_fork_mapping_start</span><span class="p">[</span><span class="n">MAX_FORKNUM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span><span class="o">***</span>
+<span class="p">...</span>
+<span class="p">};</span>
+</code></pre></div></div> <h2 id="4-smgrrelationdata的所有权--并发安全">4. SMgrRelationData的所有权 &amp; 并发安全</h2> <blockquote> <p>首先抛出一个重要问题: PG如何保证SMgrRelationData时的并发安全?</p> </blockquote> <p>函数RelationGetSmgr()中调用了smgrsetowner设置smgr的所有权.</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * smgrsetowner() -- Establish a long-lived reference to an SMgrRelation object
+ *
+ * There can be only one owner at a time; this is sufficient since currently
+ * the only such owners exist in the relcache.
+ */</span>
+<span class="kt">void</span>
+<span class="nf">smgrsetowner</span><span class="p">(</span><span class="n">SMgrRelation</span> <span class="o">*</span><span class="n">owner</span><span class="p">,</span> <span class="n">SMgrRelation</span> <span class="n">reln</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="cm">/* We don't support "disowning" an SMgrRelation here, use smgrclearowner */</span>
+	<span class="n">Assert</span><span class="p">(</span><span class="n">owner</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">);</span>
+
+	<span class="cm">/*
+	 * First, unhook any old owner.  (Normally there shouldn't be any, but it
+	 * seems possible that this can happen during swap_relation_files()
+	 * depending on the order of processing.  It's ok to close the old
+	 * relcache entry early in that case.)
+	 *
+	 * If there isn't an old owner, then the reln should be in the unowned
+	 * list, and we need to remove it.
+	 */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_owner</span><span class="p">)</span>
+		<span class="o">*</span><span class="p">(</span><span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_owner</span><span class="p">)</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+	<span class="k">else</span>
+		<span class="n">dlist_delete</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reln</span><span class="o">-&gt;</span><span class="n">node</span><span class="p">);</span>
+
+	<span class="cm">/* Now establish the ownership relationship. */</span>
+	<span class="n">reln</span><span class="o">-&gt;</span><span class="n">smgr_owner</span> <span class="o">=</span> <span class="n">owner</span><span class="p">;</span>
+	<span class="o">*</span><span class="n">owner</span> <span class="o">=</span> <span class="n">reln</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div> <p>猜测(与smgrsetowner无关): smgr是process local的变量, 多进程读写同一个文件的并发安全由buffer manager通过buffer descriptor控制. 因为每个backend在读写磁盘页之前都会检查并设置buffer descriptor中的读写锁. 所以下层storage manager进行文件IO时可能是并发安全的.</p> <h2 id="a-附录">A. 附录</h2> <h3 id="a1-readbuffer_common解析">A.1 ReadBuffer_common解析</h3> <p>TODO</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * ReadBuffer_common -- common logic for all ReadBuffer variants
+ *
+ * *hit is set to true if the request was satisfied from shared buffer cache.
+ */</span>
+<span class="k">static</span> <span class="n">Buffer</span>
+<span class="nf">ReadBuffer_common</span><span class="p">(</span><span class="n">SMgrRelation</span> <span class="n">smgr</span><span class="p">,</span> <span class="kt">char</span> <span class="n">relpersistence</span><span class="p">,</span> <span class="n">ForkNumber</span> <span class="n">forkNum</span><span class="p">,</span>
+				  <span class="n">BlockNumber</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">ReadBufferMode</span> <span class="n">mode</span><span class="p">,</span>
+				  <span class="n">BufferAccessStrategy</span> <span class="n">strategy</span><span class="p">,</span> <span class="n">bool</span> <span class="o">*</span><span class="n">hit</span><span class="p">)</span>
+<span class="p">{</span>
+	<span class="n">BufferDesc</span> <span class="o">*</span><span class="n">bufHdr</span><span class="p">;</span>
+	<span class="n">Block</span>		<span class="n">bufBlock</span><span class="p">;</span>
+	<span class="n">bool</span>		<span class="n">found</span><span class="p">;</span>
+	<span class="n">IOContext</span>	<span class="n">io_context</span><span class="p">;</span>
+	<span class="n">IOObject</span>	<span class="n">io_object</span><span class="p">;</span>
+	<span class="n">bool</span>		<span class="n">isLocalBuf</span> <span class="o">=</span> <span class="n">SmgrIsTemp</span><span class="p">(</span><span class="n">smgr</span><span class="p">);</span>
+
+	<span class="o">*</span><span class="n">hit</span> <span class="o">=</span> <span class="nb">false</span><span class="p">;</span>
+
+	<span class="cm">/*
+	 * Backward compatibility path, most code should use ExtendBufferedRel()
+	 * instead, as acquiring the extension lock inside ExtendBufferedRel()
+	 * scales a lot better.
+	 */</span>
+  <span class="err">创建新的</span><span class="n">page</span><span class="p">,</span> <span class="err">兼容旧的写法</span><span class="p">.</span> <span class="err">新的写法在</span><span class="n">ExtendBufferedRel</span><span class="p">()</span><span class="err">中</span><span class="p">.</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">unlikely</span><span class="p">(</span><span class="n">blockNum</span> <span class="o">==</span> <span class="n">P_NEW</span><span class="p">))</span>
+	<span class="p">{</span>
+		<span class="n">uint32</span>		<span class="n">flags</span> <span class="o">=</span> <span class="n">EB_SKIP_EXTENSION_LOCK</span><span class="p">;</span>
+
+		<span class="cm">/*
+		 * Since no-one else can be looking at the page contents yet, there is
+		 * no difference between an exclusive lock and a cleanup-strength
+		 * lock.
+		 */</span>
+		<span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_LOCK</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_CLEANUP_LOCK</span><span class="p">)</span>
+			<span class="n">flags</span> <span class="o">|=</span> <span class="n">EB_LOCK_FIRST</span><span class="p">;</span>
+
+		<span class="k">return</span> <span class="n">ExtendBufferedRel</span><span class="p">(</span><span class="n">EB_SMGR</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">relpersistence</span><span class="p">),</span>
+								 <span class="n">forkNum</span><span class="p">,</span> <span class="n">strategy</span><span class="p">,</span> <span class="n">flags</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="cm">/* Make sure we will have room to remember the buffer pin */</span>
+	<span class="n">ResourceOwnerEnlargeBuffers</span><span class="p">(</span><span class="n">CurrentResourceOwner</span><span class="p">);</span>
+
+	<span class="n">TRACE_POSTGRESQL_BUFFER_READ_START</span><span class="p">(</span><span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+									   <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">spcOid</span><span class="p">,</span>
+									   <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">dbOid</span><span class="p">,</span>
+									   <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">relNumber</span><span class="p">,</span>
+									   <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">backend</span><span class="p">);</span>
+
+	<span class="k">if</span> <span class="p">(</span><span class="n">isLocalBuf</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="cm">/*
+		 * We do not use a BufferAccessStrategy for I/O of temporary tables.
+		 * However, in some cases, the "strategy" may not be NULL, so we can't
+		 * rely on IOContextForStrategy() to set the right IOContext for us.
+		 * This may happen in cases like CREATE TEMPORARY TABLE AS...
+		 */</span>
+		<span class="n">io_context</span> <span class="o">=</span> <span class="n">IOCONTEXT_NORMAL</span><span class="p">;</span>
+		<span class="n">io_object</span> <span class="o">=</span> <span class="n">IOOBJECT_TEMP_RELATION</span><span class="p">;</span>
+		<span class="n">bufHdr</span> <span class="o">=</span> <span class="n">LocalBufferAlloc</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">found</span><span class="p">);</span>
+		<span class="k">if</span> <span class="p">(</span><span class="n">found</span><span class="p">)</span>
+			<span class="n">pgBufferUsage</span><span class="p">.</span><span class="n">local_blks_hit</span><span class="o">++</span><span class="p">;</span>
+		<span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_NORMAL</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_NORMAL_NO_LOG</span> <span class="o">||</span>
+				 <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_ON_ERROR</span><span class="p">)</span>
+			<span class="n">pgBufferUsage</span><span class="p">.</span><span class="n">local_blks_read</span><span class="o">++</span><span class="p">;</span>
+	<span class="p">}</span>
+	<span class="k">else</span>
+	<span class="p">{</span>
+		<span class="cm">/*
+		 * lookup the buffer.  IO_IN_PROGRESS is set if the requested block is
+		 * not currently in memory.
+		 */</span>
+		<span class="n">io_context</span> <span class="o">=</span> <span class="n">IOContextForStrategy</span><span class="p">(</span><span class="n">strategy</span><span class="p">);</span>
+		<span class="n">io_object</span> <span class="o">=</span> <span class="n">IOOBJECT_RELATION</span><span class="p">;</span>
+		<span class="n">bufHdr</span> <span class="o">=</span> <span class="n">BufferAlloc</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">relpersistence</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+							 <span class="n">strategy</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">found</span><span class="p">,</span> <span class="n">io_context</span><span class="p">);</span>
+		<span class="k">if</span> <span class="p">(</span><span class="n">found</span><span class="p">)</span>
+			<span class="n">pgBufferUsage</span><span class="p">.</span><span class="n">shared_blks_hit</span><span class="o">++</span><span class="p">;</span>
+		<span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_NORMAL</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_NORMAL_NO_LOG</span> <span class="o">||</span>
+				 <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_ON_ERROR</span><span class="p">)</span>
+			<span class="n">pgBufferUsage</span><span class="p">.</span><span class="n">shared_blks_read</span><span class="o">++</span><span class="p">;</span>
+	<span class="p">}</span>
+
+	<span class="cm">/* At this point we do NOT hold any locks. */</span>
+
+	<span class="cm">/* if it was already in the buffer pool, we're done */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">found</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="cm">/* Just need to update stats before we exit */</span>
+		<span class="o">*</span><span class="n">hit</span> <span class="o">=</span> <span class="nb">true</span><span class="p">;</span>
+		<span class="n">VacuumPageHit</span><span class="o">++</span><span class="p">;</span>
+		<span class="n">pgstat_count_io_op</span><span class="p">(</span><span class="n">io_object</span><span class="p">,</span> <span class="n">io_context</span><span class="p">,</span> <span class="n">IOOP_HIT</span><span class="p">);</span>
+
+		<span class="k">if</span> <span class="p">(</span><span class="n">VacuumCostActive</span><span class="p">)</span>
+			<span class="n">VacuumCostBalance</span> <span class="o">+=</span> <span class="n">VacuumCostPageHit</span><span class="p">;</span>
+
+		<span class="n">TRACE_POSTGRESQL_BUFFER_READ_DONE</span><span class="p">(</span><span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+										  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">spcOid</span><span class="p">,</span>
+										  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">dbOid</span><span class="p">,</span>
+										  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">relNumber</span><span class="p">,</span>
+										  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">backend</span><span class="p">,</span>
+										  <span class="n">found</span><span class="p">);</span>
+
+		<span class="cm">/*
+		 * In RBM_ZERO_AND_LOCK mode the caller expects the page to be locked
+		 * on return.
+		 */</span>
+		<span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">isLocalBuf</span><span class="p">)</span>
+		<span class="p">{</span>
+			<span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_LOCK</span><span class="p">)</span>
+				<span class="n">LWLockAcquire</span><span class="p">(</span><span class="n">BufferDescriptorGetContentLock</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">),</span>
+							  <span class="n">LW_EXCLUSIVE</span><span class="p">);</span>
+			<span class="k">else</span> <span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_CLEANUP_LOCK</span><span class="p">)</span>
+				<span class="n">LockBufferForCleanup</span><span class="p">(</span><span class="n">BufferDescriptorGetBuffer</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">));</span>
+		<span class="p">}</span>
+
+		<span class="k">return</span> <span class="n">BufferDescriptorGetBuffer</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="cm">/*
+	 * if we have gotten to this point, we have allocated a buffer for the
+	 * page but its contents are not yet valid.  IO_IN_PROGRESS is set for it,
+	 * if it's a shared buffer.
+	 */</span>
+	<span class="n">Assert</span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="n">pg_atomic_read_u32</span><span class="p">(</span><span class="o">&amp;</span><span class="n">bufHdr</span><span class="o">-&gt;</span><span class="n">state</span><span class="p">)</span> <span class="o">&amp;</span> <span class="n">BM_VALID</span><span class="p">));</span>	<span class="cm">/* spinlock not needed */</span>
+
+	<span class="n">bufBlock</span> <span class="o">=</span> <span class="n">isLocalBuf</span> <span class="o">?</span> <span class="n">LocalBufHdrGetBlock</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">)</span> <span class="o">:</span> <span class="n">BufHdrGetBlock</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">);</span>
+
+	<span class="cm">/*
+	 * Read in the page, unless the caller intends to overwrite it and just
+	 * wants us to allocate a buffer.
+	 */</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_LOCK</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_CLEANUP_LOCK</span><span class="p">)</span>
+		<span class="n">MemSet</span><span class="p">((</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="n">bufBlock</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">);</span>
+	<span class="k">else</span>
+	<span class="p">{</span>
+		<span class="n">instr_time</span>	<span class="n">io_start</span> <span class="o">=</span> <span class="n">pgstat_prepare_io_time</span><span class="p">();</span>
+
+		<span class="n">smgrread</span><span class="p">(</span><span class="n">smgr</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span> <span class="n">bufBlock</span><span class="p">);</span>
+
+		<span class="n">pgstat_count_io_op_time</span><span class="p">(</span><span class="n">io_object</span><span class="p">,</span> <span class="n">io_context</span><span class="p">,</span>
+								<span class="n">IOOP_READ</span><span class="p">,</span> <span class="n">io_start</span><span class="p">,</span> <span class="mi">1</span><span class="p">);</span>
+
+		<span class="cm">/* check for garbage data */</span>
+		<span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">PageIsVerifiedExtended</span><span class="p">((</span><span class="n">Page</span><span class="p">)</span> <span class="n">bufBlock</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+									<span class="n">PIV_LOG_WARNING</span> <span class="o">|</span> <span class="n">PIV_REPORT_STAT</span><span class="p">))</span>
+		<span class="p">{</span>
+			<span class="k">if</span> <span class="p">(</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_ON_ERROR</span> <span class="o">||</span> <span class="n">zero_damaged_pages</span><span class="p">)</span>
+			<span class="p">{</span>
+				<span class="n">ereport</span><span class="p">(</span><span class="n">WARNING</span><span class="p">,</span>
+						<span class="p">(</span><span class="n">errcode</span><span class="p">(</span><span class="n">ERRCODE_DATA_CORRUPTED</span><span class="p">),</span>
+						 <span class="n">errmsg</span><span class="p">(</span><span class="s">"invalid page in block %u of relation %s; zeroing out page"</span><span class="p">,</span>
+								<span class="n">blockNum</span><span class="p">,</span>
+								<span class="n">relpath</span><span class="p">(</span><span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">))));</span>
+				<span class="n">MemSet</span><span class="p">((</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span> <span class="n">bufBlock</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">BLCKSZ</span><span class="p">);</span>
+			<span class="p">}</span>
+			<span class="k">else</span>
+				<span class="n">ereport</span><span class="p">(</span><span class="n">ERROR</span><span class="p">,</span>
+						<span class="p">(</span><span class="n">errcode</span><span class="p">(</span><span class="n">ERRCODE_DATA_CORRUPTED</span><span class="p">),</span>
+						 <span class="n">errmsg</span><span class="p">(</span><span class="s">"invalid page in block %u of relation %s"</span><span class="p">,</span>
+								<span class="n">blockNum</span><span class="p">,</span>
+								<span class="n">relpath</span><span class="p">(</span><span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">,</span> <span class="n">forkNum</span><span class="p">))));</span>
+		<span class="p">}</span>
+	<span class="p">}</span>
+
+	<span class="cm">/*
+	 * In RBM_ZERO_AND_LOCK / RBM_ZERO_AND_CLEANUP_LOCK mode, grab the buffer
+	 * content lock before marking the page as valid, to make sure that no
+	 * other backend sees the zeroed page before the caller has had a chance
+	 * to initialize it.
+	 *
+	 * Since no-one else can be looking at the page contents yet, there is no
+	 * difference between an exclusive lock and a cleanup-strength lock. (Note
+	 * that we cannot use LockBuffer() or LockBufferForCleanup() here, because
+	 * they assert that the buffer is already valid.)
+	 */</span>
+	<span class="k">if</span> <span class="p">((</span><span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_LOCK</span> <span class="o">||</span> <span class="n">mode</span> <span class="o">==</span> <span class="n">RBM_ZERO_AND_CLEANUP_LOCK</span><span class="p">)</span> <span class="o">&amp;&amp;</span>
+		<span class="o">!</span><span class="n">isLocalBuf</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="n">LWLockAcquire</span><span class="p">(</span><span class="n">BufferDescriptorGetContentLock</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">),</span> <span class="n">LW_EXCLUSIVE</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="k">if</span> <span class="p">(</span><span class="n">isLocalBuf</span><span class="p">)</span>
+	<span class="p">{</span>
+		<span class="cm">/* Only need to adjust flags */</span>
+		<span class="n">uint32</span>		<span class="n">buf_state</span> <span class="o">=</span> <span class="n">pg_atomic_read_u32</span><span class="p">(</span><span class="o">&amp;</span><span class="n">bufHdr</span><span class="o">-&gt;</span><span class="n">state</span><span class="p">);</span>
+
+		<span class="n">buf_state</span> <span class="o">|=</span> <span class="n">BM_VALID</span><span class="p">;</span>
+		<span class="n">pg_atomic_unlocked_write_u32</span><span class="p">(</span><span class="o">&amp;</span><span class="n">bufHdr</span><span class="o">-&gt;</span><span class="n">state</span><span class="p">,</span> <span class="n">buf_state</span><span class="p">);</span>
+	<span class="p">}</span>
+	<span class="k">else</span>
+	<span class="p">{</span>
+		<span class="cm">/* Set BM_VALID, terminate IO, and wake up any waiters */</span>
+		<span class="n">TerminateBufferIO</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">,</span> <span class="nb">false</span><span class="p">,</span> <span class="n">BM_VALID</span><span class="p">);</span>
+	<span class="p">}</span>
+
+	<span class="n">VacuumPageMiss</span><span class="o">++</span><span class="p">;</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">VacuumCostActive</span><span class="p">)</span>
+		<span class="n">VacuumCostBalance</span> <span class="o">+=</span> <span class="n">VacuumCostPageMiss</span><span class="p">;</span>
+
+	<span class="n">TRACE_POSTGRESQL_BUFFER_READ_DONE</span><span class="p">(</span><span class="n">forkNum</span><span class="p">,</span> <span class="n">blockNum</span><span class="p">,</span>
+									  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">spcOid</span><span class="p">,</span>
+									  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">dbOid</span><span class="p">,</span>
+									  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">locator</span><span class="p">.</span><span class="n">relNumber</span><span class="p">,</span>
+									  <span class="n">smgr</span><span class="o">-&gt;</span><span class="n">smgr_rlocator</span><span class="p">.</span><span class="n">backend</span><span class="p">,</span>
+									  <span class="n">found</span><span class="p">);</span>
+
+	<span class="k">return</span> <span class="n">BufferDescriptorGetBuffer</span><span class="p">(</span><span class="n">bufHdr</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div> </div> </article><div id="giscus_thread" style="max-width: 800px; margin: 0 auto;"> <script>let giscusTheme=localStorage.getItem("theme"),giscusAttributes={src:"https://giscus.app/client.js","data-repo":"flayhhh/flayhhh.github.io","data-repo-id":"MDEwOlJlcG9zaXRvcnk2MDAyNDM2NQ==","data-category":"Comments","data-category-id":"DIC_kwDOA5PmLc4CTBt6","data-mapping":"title","data-strict":"1","data-reactions-enabled":"1","data-emit-metadata":"0","data-input-position":"bottom","data-theme":giscusTheme,"data-lang":"en",crossorigin:"anonymous",async:""},giscusScript=document.createElement("script");Object.entries(giscusAttributes).forEach(([t,a])=>giscusScript.setAttribute(t,a)),document.getElementById("giscus_thread").appendChild(giscusScript);</script> <noscript>Please enable JavaScript to view the <a href="http://giscus.app/?ref_noscript" rel="external nofollow noopener" target="_blank">comments powered by giscus.</a> </noscript> </div> </div> </div> </div> </div> <footer class="fixed-bottom"> <div class="container mt-0"> © Copyright 2023 Hao Luan. </div> </footer> <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script> <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.1/dist/js/bootstrap.bundle.min.js" integrity="sha256-fgLAgv7fyCGopR/gBNq2iW3ZKIdqIcyshnUULC4vex8=" crossorigin="anonymous"></script> <script src="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/js/mdb.min.js" integrity="sha256-NdbiivsvWt7VYCt6hYNT3h/th9vSTL4EDWeGs5SN3DA=" crossorigin="anonymous"></script> <script defer src="https://cdn.jsdelivr.net/npm/masonry-layout@4.2.2/dist/masonry.pkgd.min.js" integrity="sha256-Nn1q/fx0H7SNLZMQ5Hw5JLaTRZp0yILA/FRexe19VdI=" crossorigin="anonymous"></script> <script defer src="https://cdn.jsdelivr.net/npm/imagesloaded@4/imagesloaded.pkgd.min.js"></script> <script defer src="/assets/js/masonry.js" type="text/javascript"></script> <script defer src="https://cdn.jsdelivr.net/npm/medium-zoom@1.0.8/dist/medium-zoom.min.js" integrity="sha256-7PhEpEWEW0XXQ0k6kQrPKwuoIomz8R8IYyuU1Qew4P8=" crossorigin="anonymous"></script> <script defer src="/assets/js/zoom.js"></script> <script defer src="https://cdn.rawgit.com/afeld/bootstrap-toc/v1.0.1/dist/bootstrap-toc.min.js"></script> <script defer src="https://unpkg.com/bootstrap-table@1.21.4/dist/bootstrap-table.min.js"></script> <script src="/assets/js/no_defer.js"></script> <script defer src="/assets/js/common.js"></script> <script defer src="/assets/js/copy_code.js" type="text/javascript"></script> <script async src="https://d1bxh8uas1mnw7.cloudfront.net/assets/embed.js"></script> <script async src="https://badge.dimensions.ai/badge.js"></script> <script type="text/javascript">window.MathJax={tex:{tags:"ams"}};</script> <script defer type="text/javascript" id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3.2.0/es5/tex-mml-chtml.js"></script> <script defer src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script> <script type="text/javascript">function progressBarSetup(){"max"in document.createElement("progress")?(initializeProgressElement(),$(document).on("scroll",function(){progressBar.attr({value:getCurrentScrollPosition()})}),$(window).on("resize",initializeProgressElement)):(resizeProgressBar(),$(document).on("scroll",resizeProgressBar),$(window).on("resize",resizeProgressBar))}function getCurrentScrollPosition(){return $(window).scrollTop()}function initializeProgressElement(){let e=$("#navbar").outerHeight(!0);$("body").css({"padding-top":e}),$("progress-container").css({"padding-top":e}),progressBar.css({top:e}),progressBar.attr({max:getDistanceToScroll(),value:getCurrentScrollPosition()})}function getDistanceToScroll(){return $(document).height()-$(window).height()}function resizeProgressBar(){progressBar.css({width:getWidthPercentage()+"%"})}function getWidthPercentage(){return getCurrentScrollPosition()/getDistanceToScroll()*100}const progressBar=$("#progress");window.onload=function(){setTimeout(progressBarSetup,50)};</script> </body> </html>
