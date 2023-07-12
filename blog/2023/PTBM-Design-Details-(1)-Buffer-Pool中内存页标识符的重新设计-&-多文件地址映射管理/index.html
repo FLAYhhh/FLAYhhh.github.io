@@ -1,0 +1,127 @@
+<!DOCTYPE html> <html lang="en"> <head> <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"> <meta http-equiv="X-UA-Compatible" content="IE=edge"> <title>Ptbm design details (1): buffer pool中内存页标识符的重新设计 &amp; 多文件地址映射管理 | Hao Luan</title> <meta name="author" content="Hao Luan"> <meta name="description" content="A system programmer and resercher's blog. "> <link href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha256-DF7Zhf293AJxJNTmh5zhoYYIMs2oXitRfBjY+9L//AY=" crossorigin="anonymous"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/css/mdb.min.css" integrity="sha256-jpjYvU3G3N6nrrBwXJoVEYI/0zw8htfFnhT9ljN3JJw=" crossorigin="anonymous"> <link defer rel="stylesheet" href="https://unpkg.com/bootstrap-table@1.21.4/dist/bootstrap-table.min.css"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" integrity="sha256-HtsXJanqjKTc8vVQjO4YMhiqFoXkfBsjBWcX91T1jr8=" crossorigin="anonymous"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/academicons@1.9.1/css/academicons.min.css" integrity="sha256-i1+4qU2G2860dGGIOJscdC30s9beBXjFfzjWLjBRsBg=" crossorigin="anonymous"> <link rel="stylesheet" type="text/css" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700|Roboto+Slab:100,300,400,500,700|Material+Icons"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jwarby/jekyll-pygments-themes@master/github.css" media="" id="highlight_theme_light"> <link rel="stylesheet" href="/assets/css/main.css"> <link rel="canonical" href="https://flayhhh.github.io/blog/2023/PTBM-Design-Details-(1)-Buffer-Pool%E4%B8%AD%E5%86%85%E5%AD%98%E9%A1%B5%E6%A0%87%E8%AF%86%E7%AC%A6%E7%9A%84%E9%87%8D%E6%96%B0%E8%AE%BE%E8%AE%A1-&amp;-%E5%A4%9A%E6%96%87%E4%BB%B6%E5%9C%B0%E5%9D%80%E6%98%A0%E5%B0%84%E7%AE%A1%E7%90%86/"> <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jwarby/jekyll-pygments-themes@master/native.css" media="none" id="highlight_theme_dark"> <script src="/assets/js/theme.js"></script> <script src="/assets/js/dark_mode.js"></script> </head> <body class="fixed-top-nav "> <header> <nav id="navbar" class="navbar navbar-light navbar-expand-sm fixed-top"> <div class="container"> <a class="navbar-brand title font-weight-lighter" href="/"><span class="font-weight-bold">Hao </span>Luan</a> <button class="navbar-toggler collapsed ml-auto" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation"> <span class="sr-only">Toggle navigation</span> <span class="icon-bar top-bar"></span> <span class="icon-bar middle-bar"></span> <span class="icon-bar bottom-bar"></span> </button> <div class="collapse navbar-collapse text-right" id="navbarNav"> <ul class="navbar-nav ml-auto flex-nowrap"> <li class="nav-item "> <a class="nav-link" href="/">About</a> </li> <li class="nav-item active"> <a class="nav-link" href="/blog/">Hao Luan's blog<span class="sr-only">(current)</span></a> </li> <li class="nav-item "> <a class="nav-link" href="/CV/">CV</a> </li> <li class="nav-item "> <a class="nav-link" href="/Publications/">Publications</a> </li> <li class="nav-item "> <a class="nav-link" href="/Projects/">Projects</a> </li> <li class="toggle-container"> <button id="light-toggle" title="Change theme"> <i class="fas fa-moon"></i> <i class="fas fa-sun"></i> </button> </li> </ul> </div> </div> </nav> <progress id="progress" value="0"> <div class="progress-container"> <span class="progress-bar"></span> </div> </progress> </header> <div class="container mt-5"> <div class="post"> <header class="post-header"> <h1 class="post-title">Ptbm design details (1): buffer pool中内存页标识符的重新设计 &amp; 多文件地址映射管理</h1> <p class="post-meta">July 12, 2023</p> <p class="post-tags"> <a href="/blog/2023"> <i class="fas fa-calendar fa-sm"></i> 2023 </a>   ·   <a href="/blog/tag/pt-bm"> <i class="fas fa-hashtag fa-sm"></i> PT-BM</a>     ·   <a href="/blog/category/pg"> <i class="fas fa-tag fa-sm"></i> PG</a>   </p> </header> <article class="post-content"> <div id="table-of-contents"> <ul id="toc" class="section-nav"> <li class="toc-entry toc-h1"> <a href="#ptbm-design-details-1-buffer-pool%E4%B8%AD%E5%86%85%E5%AD%98%E9%A1%B5%E6%A0%87%E8%AF%86%E7%AC%A6%E7%9A%84%E9%87%8D%E6%96%B0%E8%AE%BE%E8%AE%A1--%E5%A4%9A%E6%96%87%E4%BB%B6%E5%9C%B0%E5%9D%80%E6%98%A0%E5%B0%84%E7%AE%A1%E7%90%86">PTBM Design Details (1): Buffer Pool中内存页标识符的重新设计 &amp; 多文件地址映射管理</a> <ul> <li class="toc-entry toc-h2"><a href="#1-bufferdesc--ptedit_pte_t">1. BufferDesc &amp; ptedit_pte_t</a></li> <li class="toc-entry toc-h2"><a href="#2-%E8%BF%9B%E4%B8%80%E6%AD%A5%E7%A1%AE%E8%AE%A4linux%E6%BA%90%E7%A0%81%E4%B8%ADpte%E7%9A%84%E5%AE%9A%E4%B9%89">2. 进一步确认linux源码中pte的定义</a></li> <li class="toc-entry toc-h2"><a href="#3-build-and-manage-mmap">3. Build and manage Mmap</a></li> </ul> </li> </ul> </div> <hr> <div id="markdown-content"> <h1 id="ptbm-design-details-1-buffer-pool中内存页标识符的重新设计--多文件地址映射管理">PTBM Design Details (1): Buffer Pool中内存页标识符的重新设计 &amp; 多文件地址映射管理</h1> <h2 id="1-bufferdesc--ptedit_pte_t">1. BufferDesc &amp; ptedit_pte_t</h2> <p>BufferDesc是buffer manager中的重要类型. 对应buffer pool中的每个buffer frame, 都有与之对应的BufferDesc来描述该Buffer frame的状态. 换句话说, 每个内存页都需要一个BufferDesc描述其状态. 在Ptbm的设计中, pte可以替代bufferdesc的功能.</p> <p>首先给出这两个类型的定义：</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// ptedit_header.h</span>
+<span class="k">typedef</span> <span class="k">struct</span> <span class="p">{</span>
+    <span class="kt">size_t</span> <span class="n">present</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span> <span class="c1">// </span>
+    <span class="kt">size_t</span> <span class="n">writeable</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">user_access</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">write_through</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">cache_disabled</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">accessed</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">dirty</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">size</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">global</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">ignored_2</span> <span class="o">:</span> <span class="mi">3</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">pfn</span> <span class="o">:</span> <span class="mi">28</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">reserved_1</span> <span class="o">:</span> <span class="mi">12</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">ignored_1</span> <span class="o">:</span> <span class="mi">11</span><span class="p">;</span>
+    <span class="kt">size_t</span> <span class="n">execution_disabled</span> <span class="o">:</span> <span class="mi">1</span><span class="p">;</span>
+<span class="p">}</span> <span class="n">ptedit_pte_t</span><span class="p">;</span>
+<span class="c1">// pte中预留了 12 + 11 + 3 = 26 bit</span>
+
+<span class="c1">//==========================================================================</span>
+<span class="c1">// buf_internals.h</span>
+<span class="cm">/*
+ * Buffer state is a single 32-bit variable where following data is combined.
+ *
+ * - 18 bits refcount
+ * - 4 bits usage count
+ * - 10 bits of flags
+ *
+ * Combining these values allows to perform some operations without locking
+ * the buffer header, by modifying them together with a CAS loop.
+ *
+ * The definition of buffer state components is below.
+ */</span>
+<span class="cp">#define BUF_REFCOUNT_ONE 1
+#define BUF_REFCOUNT_MASK ((1U &lt;&lt; 18) - 1)
+#define BUF_USAGECOUNT_MASK 0x003C0000U
+#define BUF_USAGECOUNT_ONE (1U &lt;&lt; 18)
+#define BUF_USAGECOUNT_SHIFT 18
+#define BUF_FLAG_MASK 0xFFC00000U
+</span>
+<span class="cm">/* Get refcount and usagecount from buffer state */</span>
+<span class="cp">#define BUF_STATE_GET_REFCOUNT(state) ((state) &amp; BUF_REFCOUNT_MASK)
+#define BUF_STATE_GET_USAGECOUNT(state) (((state) &amp; BUF_USAGECOUNT_MASK) &gt;&gt; BUF_USAGECOUNT_SHIFT)
+</span><span class="cm">/*
+ * Flags for buffer descriptors
+ *
+ * Note: BM_TAG_VALID essentially means that there is a buffer hashtable
+ * entry associated with the buffer's tag.
+ */</span>
+<span class="cp">#define BM_LOCKED				(1U &lt;&lt; 22)	</span><span class="cm">/* buffer header is locked */</span><span class="cp">
+#define BM_DIRTY				(1U &lt;&lt; 23)	</span><span class="cm">/* data needs writing */</span><span class="cp">
+#define BM_VALID				(1U &lt;&lt; 24)	</span><span class="cm">/* data is valid */</span><span class="cp">
+#define BM_TAG_VALID			(1U &lt;&lt; 25)	</span><span class="cm">/* tag is assigned */</span><span class="cp">
+#define BM_IO_IN_PROGRESS		(1U &lt;&lt; 26)	</span><span class="cm">/* read or write in progress */</span><span class="cp">
+#define BM_IO_ERROR				(1U &lt;&lt; 27)	</span><span class="cm">/* previous I/O failed */</span><span class="cp">
+#define BM_JUST_DIRTIED			(1U &lt;&lt; 28)	</span><span class="cm">/* dirtied since write started */</span><span class="cp">
+#define BM_PIN_COUNT_WAITER		(1U &lt;&lt; 29)	</span><span class="cm">/* have waiter for sole pin */</span><span class="cp">
+#define BM_CHECKPOINT_NEEDED	(1U &lt;&lt; 30)	</span><span class="cm">/* must write for checkpoint */</span><span class="cp">
+#define BM_PERMANENT			(1U &lt;&lt; 31)	</span><span class="cm">/* permanent buffer (not unlogged,
+											 * or init fork) */</span><span class="cp">
+</span><span class="k">typedef</span> <span class="k">struct</span> <span class="n">BufferDesc</span>
+<span class="p">{</span>
+	<span class="n">BufferTag</span>	<span class="n">tag</span><span class="p">;</span>			<span class="cm">/* ID of page contained in buffer */</span>
+	<span class="kt">int</span>			<span class="n">buf_id</span><span class="p">;</span>			<span class="cm">/* buffer's index number (from 0) */</span>
+
+	<span class="cm">/* state of the tag, containing flags, refcount and usagecount */</span>
+	<span class="n">pg_atomic_uint32</span> <span class="n">state</span><span class="p">;</span>
+
+	<span class="kt">int</span>			<span class="n">wait_backend_pgprocno</span><span class="p">;</span>	<span class="cm">/* backend of pin-count waiter */</span>
+	<span class="kt">int</span>			<span class="n">freeNext</span><span class="p">;</span>		<span class="cm">/* link in freelist chain */</span>
+	<span class="n">LWLock</span>		<span class="n">content_lock</span><span class="p">;</span>	<span class="cm">/* to lock access to buffer contents */</span>
+<span class="p">}</span> <span class="n">BufferDesc</span><span class="p">;</span>
+</code></pre></div></div> <p>BufferDesc.state中标记位（10个）和ptedit_pte_t中标记位的对比：</p> <table> <thead> <tr> <th style="text-align: left">BufferDesc.state</th> <th style="text-align: center">ptedit_pte_t</th> <th style="text-align: right">说明</th> </tr> </thead> <tbody> <tr> <td style="text-align: left">BM_LOCKED</td> <td style="text-align: center"> </td> <td style="text-align: right">(存疑）猜测用于锁定整个BufferDesc。需要具体考察该bit的作用，例如：锁定BufferDesc的期间是否有除了修改成员之外的需求。如果只是为了原子的修改BufferDesc，则ptedit_pte_t不需要类似的标记，因为ptedit_pte_t为64bit大小，我们可以通过原子操作修改其中的bit。</td> </tr> <tr> <td style="text-align: left">BM_DIRTY</td> <td style="text-align: center">dirty</td> <td style="text-align: right">这两个标记可以合并</td> </tr> <tr> <td style="text-align: left">BM_VALID</td> <td style="text-align: center">present</td> <td style="text-align: right">（存疑）也许可以和present合并</td> </tr> <tr> <td style="text-align: left">BM_TAG_VALID</td> <td style="text-align: center"> </td> <td style="text-align: right">BufferDesc中需要存储tag，ptbm的设计不需要tag。</td> </tr> <tr> <td style="text-align: left">BM_IO_IN_PROGRESS</td> <td style="text-align: center">新增</td> <td style="text-align: right">ptbm需要新增类似的bit。1. 预读时分配物理内存， 并将pfn写入pte。但是present为false。2.进行异步IO或预读。在pte中设置IO_IN_PROGRESS标记位。 3.预读完成后再次将pte修改为有效状态 4.正式的读流程中需要check IO_IN_PROGESS标记位。</td> </tr> <tr> <td style="text-align: left">BM_IO_ERROR</td> <td style="text-align: center">新增</td> <td style="text-align: right">ptbm需要新增类似的bit。 如果IO错误，page中可能包含错误的内容。</td> </tr> <tr> <td style="text-align: left">BM_JUST_DIRTIED</td> <td style="text-align: center">新增</td> <td style="text-align: right">ptbm需要新增类似的bit（需要详细考察）</td> </tr> <tr> <td style="text-align: left">BM_PIN_COUNT_WAITER</td> <td style="text-align: center">新增</td> <td style="text-align: right">（存疑）BufferDesc中记录了等待者的id，但是pte中没有空间容纳等待者的id。解决方法：1. 不记录等待者。2. 使用哈希结构将等待者放在其他地方。</td> </tr> <tr> <td style="text-align: left">BM_CHECKPOINT_NEEDED</td> <td style="text-align: center">新增</td> <td style="text-align: right">（需要详细考察）需要详细地了解checkpoint逻辑。</td> </tr> <tr> <td style="text-align: left">BM_PERMANENT</td> <td style="text-align: center">新增</td> <td style="text-align: right">ptbm需要新增类似的bit。</td> </tr> <tr> <td style="text-align: left"> </td> <td style="text-align: center"> </td> <td style="text-align: right"> </td> </tr> </tbody> </table> <blockquote> <ul> <li>Buffer state is a single 32-bit variable where following data is combined. *</li> <li> <ul> <li>18 bits refcount</li> </ul> </li> <li> <ul> <li>4 bits usage count</li> </ul> </li> <li> <ul> <li>10 bits of flags</li> </ul> </li> </ul> </blockquote> <p>BufferDesc.state一共32bit，而pte中只预留了26bit， 所以需要压缩一下state。</p> <p>BufferDesc.State分为三个部分: refcount(18 bit), usage count(4 bit), flags(10 bit). 在上面的表格中，我们分析了如果使用ptbm的设计，flag可以缩减到 6bit。如果将refcount缩减到16bit，那么BufferDesc.state可以用26bit表示。</p> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/*
+ * The maximum allowed value of usage_count represents a tradeoff between
+ * accuracy and speed of the clock-sweep buffer management algorithm.  A
+ * large value (comparable to NBuffers) would approximate LRU semantics.
+ * But it can take as many as BM_MAX_USAGE_COUNT+1 complete cycles of
+ * clock sweeps to find a free buffer, so in practice we don't want the
+ * value to be very large.
+ */</span> 
+<span class="cp">#define BM_MAX_USAGE_COUNT	5
+</span></code></pre></div></div> <p>BufferDesc.state中的usage count似乎和替换算法有关。如果采用了ptbm，如何设计替换算法？</p> <p>原本的替换算法为clock sweeping，需要扫描buffer pool中所有的buffer。usage count在某个进程访问某个page时递增，在每次扫描到该buffer时递减。当usage count为0时，该buffer被替换。clock sweeping 遇到被pin住的buffer会跳过。</p> <p>重新设计ptbm需要扫描所有的物理page，并在page struct里记录usage count。</p> <p>这样 pte中也不需要存储usage count。</p> <p>经过以上的分析，pte中只需要记录refcount（18 bit）和flags （6 bit）。</p> <h2 id="2-进一步确认linux源码中pte的定义">2. 进一步确认linux源码中pte的定义</h2> <div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// /arch/x86/include/asm/pgtable_types.h</span>
+
+<span class="cp">#define _PAGE_BIT_PRESENT	0	</span><span class="cm">/* is present */</span><span class="cp">
+#define _PAGE_BIT_RW		1	</span><span class="cm">/* writeable */</span><span class="cp">
+#define _PAGE_BIT_USER		2	</span><span class="cm">/* userspace addressable */</span><span class="cp">
+#define _PAGE_BIT_PWT		3	</span><span class="cm">/* page write through */</span><span class="cp">
+#define _PAGE_BIT_PCD		4	</span><span class="cm">/* page cache disabled */</span><span class="cp">
+#define _PAGE_BIT_ACCESSED	5	</span><span class="cm">/* was accessed (raised by CPU) */</span><span class="cp">
+#define _PAGE_BIT_DIRTY		6	</span><span class="cm">/* was written to (raised by CPU) */</span><span class="cp">
+#define _PAGE_BIT_PSE		7	</span><span class="cm">/* 4 MB (or 2MB) page */</span><span class="cp">
+#define _PAGE_BIT_PAT		7	</span><span class="cm">/* on 4KB pages */</span><span class="cp">
+#define _PAGE_BIT_GLOBAL	8	</span><span class="cm">/* Global TLB entry PPro+ */</span><span class="cp">
+#define _PAGE_BIT_SOFTW1	9	</span><span class="cm">/* available for programmer */</span><span class="cp">
+#define _PAGE_BIT_SOFTW2	10	</span><span class="cm">/* " */</span><span class="cp">
+#define _PAGE_BIT_SOFTW3	11	</span><span class="cm">/* " */</span><span class="cp">
+#define _PAGE_BIT_PAT_LARGE	12	</span><span class="cm">/* On 2MB or 1GB pages */</span><span class="cp">
+#define _PAGE_BIT_SOFTW4	58	</span><span class="cm">/* available for programmer */</span><span class="cp">
+#define _PAGE_BIT_PKEY_BIT0	59	</span><span class="cm">/* Protection Keys, bit 1/4 */</span><span class="cp">
+#define _PAGE_BIT_PKEY_BIT1	60	</span><span class="cm">/* Protection Keys, bit 2/4 */</span><span class="cp">
+#define _PAGE_BIT_PKEY_BIT2	61	</span><span class="cm">/* Protection Keys, bit 3/4 */</span><span class="cp">
+#define _PAGE_BIT_PKEY_BIT3	62	</span><span class="cm">/* Protection Keys, bit 4/4 */</span><span class="cp">
+#define _PAGE_BIT_NX		63	</span><span class="cm">/* No execute: only valid after cpuid check */</span><span class="cp">
+</span>
+<span class="cp">#define _PAGE_BIT_SPECIAL	_PAGE_BIT_SOFTW1
+#define _PAGE_BIT_CPA_TEST	_PAGE_BIT_SOFTW1
+#define _PAGE_BIT_UFFD_WP	_PAGE_BIT_SOFTW2 </span><span class="cm">/* userfaultfd wrprotected */</span><span class="cp">
+#define _PAGE_BIT_SOFT_DIRTY	_PAGE_BIT_SOFTW3 </span><span class="cm">/* software dirty tracking */</span><span class="cp">
+#define _PAGE_BIT_DEVMAP	_PAGE_BIT_SOFTW4
+</span></code></pre></div></div> <p>关于pte中哪些bit可用，有很多不同的说法：</p> <ul> <li>https://stackoverflow.com/questions/50102068/how-to-use-page-bit-softw1 这篇文章说4个保留位不一定能全部使用，反而52-57可以使用。</li> <li>PTEditor的作者说只能使用4个保留位</li> <li>https://01.org/blogs/dave/2020/linux-consumption-x86-page-table-bits 这篇文章介绍了预留位的一些作用。</li> </ul> <p>一劳永逸的解决方法：</p> <p>除了BM_VALID/present， 其他flag都可以放在page header中。</p> <h2 id="3-build-and-manage-mmap">3. Build and manage Mmap</h2> <p>首先，我们类比一下传统buffer manager处理一次“读磁盘页”的流程：</p> <ol> <li>从storage manager中获取磁盘页地址;</li> <li>在buffer pool中获取一个buffer frame;</li> <li>在哈希表中建立page tag 到 buffer frame的映射;</li> </ol> <p>在这个过程中，所有文件的磁盘页都统一分散在哈希表中。一个文件和多个文件无需区别对待。</p> <p>而在ptbm中，由于mmap的映射是顺序的，尽管我们没有直接使用基于文件的mmap，但是在地址空间的对应关系上仍然和基于文件的mmap相同。我们将一段连续的虚拟内存空间映射到了一个文件中的一段连续的IO地址空间。由于我们计划使用共享内存，所以只有一段虚拟地质空间，但是每个releation都会对应一个或多个文件，所以出现了一个虚拟地址空间对应多个文件IO地址空间的情况。</p> <p><strong>如何处理这种一对多的关系？</strong></p> <p>我们打算采用分段的方式处理一对多的关系。每个文件IO空间都对应虚拟地址空间中的一段。一段的大小默认为2GB（可以调整默认值）。当文件大小超出当前虚拟地址空间中所分配的段大小时，重新在虚拟地址空间中分配2倍于原来段大小的空间。注意，这里只是重新分配虚拟地址空间，所以我们只需要操作页表，改变虚拟地址到物理地址的映射关系，而无需进行拷贝操作。</p> <p>为此我们定义一个bookkeeper类型，记录每个文件对应的起始映射地址和段大小。另外，我们希望每次读取磁盘页时能够直接获取该磁盘页所在文件的映射地址，而无需通过文件名查找哈希表找到映射地址，所以我们还需要将起始映射地址从bookkeeper同步到每个文件在pg中的元数据表示。</p> <div class="language-jsx highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nx">struct</span> <span class="nx">MappingSegmentShared</span> <span class="p">{</span>
+  <span class="nx">char</span> <span class="nx">file_name</span><span class="p">[</span><span class="nx">N</span><span class="p">];</span> 
+  <span class="k">void</span> <span class="o">*</span><span class="nx">mapping_start</span><span class="p">;</span>
+  <span class="nx">size_t</span> <span class="nx">len</span><span class="p">;</span> <span class="c1">// count in byte, but align to 1GB.</span>
+  <span class="nx">MappingSegmentShared</span> <span class="o">*</span><span class="nx">prev</span><span class="p">;</span>
+  <span class="nx">MappingSegmentShared</span> <span class="o">*</span><span class="nx">next</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="c1">// bookkeeper 类型</span>
+<span class="nx">struct</span> <span class="nx">PtbmShared</span> <span class="p">{</span>
+  <span class="c1">// need util like vector</span>
+  <span class="nx">LWLock</span> <span class="nx">lock</span><span class="p">;</span>
+  <span class="nx">Hash_table</span> <span class="nx">segments</span><span class="p">;</span> <span class="c1">// sorted by mapping start.</span>
+  <span class="nf">build_new_mapping</span><span class="p">();</span> <span class="c1">// when reading new file</span>
+  <span class="nf">unmapping</span><span class="p">();</span>
+  <span class="nf">extent_segment</span><span class="p">();</span> <span class="c1">// 扩容</span>
+<span class="p">};</span>
+</code></pre></div></div> <p>需要注意的是, ptbmShared以及成员segments都需要存放在共享内存中. 关于共享内存中的数据可结构, 可以参考“Postgresql Shared Hash Table”.</p> <p>下面给出ptbm book keeper草图:</p> <p><img src="/assets/img/ptbm_segments.jpeg" width="400" height="400"></p> <p>下一步是根据草图在pg中实现ptbm的book keep. 另外需要将book keeper中的映射关系同步至file metadata cache中.</p> </div> </article><div id="giscus_thread" style="max-width: 800px; margin: 0 auto;"> <script>let giscusTheme=localStorage.getItem("theme"),giscusAttributes={src:"https://giscus.app/client.js","data-repo":"flayhhh/flayhhh.github.io","data-repo-id":"MDEwOlJlcG9zaXRvcnk2MDAyNDM2NQ==","data-category":"Comments","data-category-id":"DIC_kwDOA5PmLc4CTBt6","data-mapping":"title","data-strict":"1","data-reactions-enabled":"1","data-emit-metadata":"0","data-input-position":"bottom","data-theme":giscusTheme,"data-lang":"en",crossorigin:"anonymous",async:""},giscusScript=document.createElement("script");Object.entries(giscusAttributes).forEach(([t,a])=>giscusScript.setAttribute(t,a)),document.getElementById("giscus_thread").appendChild(giscusScript);</script> <noscript>Please enable JavaScript to view the <a href="http://giscus.app/?ref_noscript" rel="external nofollow noopener" target="_blank">comments powered by giscus.</a> </noscript> </div> </div> </div> <footer class="fixed-bottom"> <div class="container mt-0"> © Copyright 2023 Hao Luan. </div> </footer> <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script> <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.1/dist/js/bootstrap.bundle.min.js" integrity="sha256-fgLAgv7fyCGopR/gBNq2iW3ZKIdqIcyshnUULC4vex8=" crossorigin="anonymous"></script> <script src="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/js/mdb.min.js" integrity="sha256-NdbiivsvWt7VYCt6hYNT3h/th9vSTL4EDWeGs5SN3DA=" crossorigin="anonymous"></script> <script defer src="https://cdn.jsdelivr.net/npm/masonry-layout@4.2.2/dist/masonry.pkgd.min.js" integrity="sha256-Nn1q/fx0H7SNLZMQ5Hw5JLaTRZp0yILA/FRexe19VdI=" crossorigin="anonymous"></script> <script defer src="https://cdn.jsdelivr.net/npm/imagesloaded@4/imagesloaded.pkgd.min.js"></script> <script defer src="/assets/js/masonry.js" type="text/javascript"></script> <script defer src="https://cdn.jsdelivr.net/npm/medium-zoom@1.0.8/dist/medium-zoom.min.js" integrity="sha256-7PhEpEWEW0XXQ0k6kQrPKwuoIomz8R8IYyuU1Qew4P8=" crossorigin="anonymous"></script> <script defer src="/assets/js/zoom.js"></script> <script defer src="https://unpkg.com/bootstrap-table@1.21.4/dist/bootstrap-table.min.js"></script> <script src="/assets/js/no_defer.js"></script> <script defer src="/assets/js/common.js"></script> <script defer src="/assets/js/copy_code.js" type="text/javascript"></script> <script async src="https://d1bxh8uas1mnw7.cloudfront.net/assets/embed.js"></script> <script async src="https://badge.dimensions.ai/badge.js"></script> <script type="text/javascript">window.MathJax={tex:{tags:"ams"}};</script> <script defer type="text/javascript" id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3.2.0/es5/tex-mml-chtml.js"></script> <script defer src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script> <script type="text/javascript">function progressBarSetup(){"max"in document.createElement("progress")?(initializeProgressElement(),$(document).on("scroll",function(){progressBar.attr({value:getCurrentScrollPosition()})}),$(window).on("resize",initializeProgressElement)):(resizeProgressBar(),$(document).on("scroll",resizeProgressBar),$(window).on("resize",resizeProgressBar))}function getCurrentScrollPosition(){return $(window).scrollTop()}function initializeProgressElement(){let e=$("#navbar").outerHeight(!0);$("body").css({"padding-top":e}),$("progress-container").css({"padding-top":e}),progressBar.css({top:e}),progressBar.attr({max:getDistanceToScroll(),value:getCurrentScrollPosition()})}function getDistanceToScroll(){return $(document).height()-$(window).height()}function resizeProgressBar(){progressBar.css({width:getWidthPercentage()+"%"})}function getWidthPercentage(){return getCurrentScrollPosition()/getDistanceToScroll()*100}const progressBar=$("#progress");window.onload=function(){setTimeout(progressBarSetup,50)};</script> </body> </html>
