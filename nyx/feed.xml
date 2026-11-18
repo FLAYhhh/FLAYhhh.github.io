@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+  <channel>
+    <title>Nyx 技术笔记</title>
+    <link>https://flayhhh.github.io/nyx/</link>
+    <description>关于分布式系统、对象存储、性能工程与 AI 基础设施的技术笔记。</description>
+    <language>zh-CN</language>
+    <atom:link href="https://flayhhh.github.io/nyx/feed.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>发布测试：从网页到 RSS</title>
+      <link>https://flayhhh.github.io/nyx/articles/publish-preview/</link>
+      <description>这是一篇公开测试文章，用来检查文章页、站内导航和 RSS 是否一致。不含私有草稿或研究结论。</description>
+      <category>发布测试</category>
+      <pubDate>Wed, 18 Nov 2026 00:00:00 GMT</pubDate>
+      <guid isPermaLink="true">https://flayhhh.github.io/nyx/articles/publish-preview/</guid>
+      <dc:creator>Nyx</dc:creator>
+    </item>
+  </channel>
+</rss>

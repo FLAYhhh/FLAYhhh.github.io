@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='utf-8'?>
+<opml version="2.0">
+  <head>
+    <title>Nyx 技术笔记 · 外部订阅源</title>
+  </head>
+  <body>
+    <outline text="分布式系统" title="分布式系统">
+      <outline type="rss" text="Martin Kleppmann" title="Martin Kleppmann" xmlUrl="https://martin.kleppmann.com/feed.rss" htmlUrl="https://martin.kleppmann.com/" />
+      <outline type="rss" text="Jepsen" title="Jepsen" xmlUrl="https://jepsen.io/blog.rss" htmlUrl="https://jepsen.io/analyses" />
+      <outline type="rss" text="Marc Brooker" title="Marc Brooker" xmlUrl="https://brooker.co.za/blog/rss.xml" htmlUrl="https://brooker.co.za/blog/" />
+      <outline type="rss" text="Murat Demirbas · Metadata" title="Murat Demirbas · Metadata" xmlUrl="https://muratbuffalo.blogspot.com/feeds/posts/default" htmlUrl="https://muratbuffalo.blogspot.com/" />
+    </outline>
+    <outline text="存储与数据库" title="存储与数据库">
+      <outline type="rss" text="Phil Eaton" title="Phil Eaton" xmlUrl="https://notes.eatonphil.com/rss.xml" htmlUrl="https://notes.eatonphil.com/" />
+      <outline type="rss" text="bits &amp; pages · Almog Gavra" title="bits &amp; pages · Almog Gavra" xmlUrl="https://www.bitsxpages.com/feed" htmlUrl="https://www.bitsxpages.com/" />
+      <outline type="rss" text="Mark Callaghan · Small Datum" title="Mark Callaghan · Small Datum" xmlUrl="https://smalldatum.blogspot.com/feeds/posts/default" htmlUrl="https://smalldatum.blogspot.com/" />
+      <outline type="rss" text="Brandur · Articles" title="Brandur · Articles" xmlUrl="https://brandur.org/articles.atom" htmlUrl="https://brandur.org/articles" />
+    </outline>
+    <outline text="性能与工具" title="性能与工具">
+      <outline type="rss" text="Brendan Gregg" title="Brendan Gregg" xmlUrl="https://www.brendangregg.com/blog/rss.xml" htmlUrl="https://www.brendangregg.com/blog/" />
+      <outline type="rss" text="Julia Evans" title="Julia Evans" xmlUrl="https://jvns.ca/atom.xml" htmlUrl="https://jvns.ca/" />
+    </outline>
+    <outline text="AI 基础设施" title="AI 基础设施">
+      <outline type="rss" text="vLLM Blog" title="vLLM Blog" xmlUrl="https://vllm.ai/blog/rss.xml" htmlUrl="https://vllm.ai/blog" />
+      <outline type="rss" text="SGLang · GitHub Releases" title="SGLang · GitHub Releases" xmlUrl="https://github.com/sgl-project/sglang/releases.atom" htmlUrl="https://github.com/sgl-project/sglang/releases" />
+      <outline type="rss" text="Modal" title="Modal" xmlUrl="https://modal.com/blog/atom.xml" htmlUrl="https://modal.com/blog" />
+    </outline>
+  </body>
+</opml>
